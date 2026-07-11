@@ -84,6 +84,28 @@ static MenuItem BuildItem(const KeyVals& kv) {
     return it;
 }
 
+static const std::wstring* FindVal(const KeyVals& kv, const wchar_t* name) {
+    for (auto& p : kv) if (Lower(p.first) == name) return &p.second;
+    return nullptr;
+}
+
+// Direct children of group `prefix`: sections named  prefix + "\\" + seg  (seg has no backslash),
+// in file order. A child that itself declares Submenu recurses on its own full-path group.
+static std::vector<MenuItem> BuildGroup(const Sections& sections, const std::wstring& prefix) {
+    std::vector<MenuItem> out;
+    std::wstring want = prefix + L"\\";
+    for (auto& s : sections) {
+        if (s.first.size() <= want.size()) continue;
+        if (s.first.compare(0, want.size(), want) != 0) continue;
+        if (s.first.find(L'\\', want.size()) != std::wstring::npos) continue; // deeper, not direct
+        MenuItem it = BuildItem(s.second);
+        if (const std::wstring* sub = FindVal(s.second, L"submenu"))
+            it.submenu = BuildGroup(sections, *sub);
+        out.push_back(std::move(it));
+    }
+    return out;
+}
+
 MenuModel ParseMenu(const std::wstring& text) {
     MenuModel m;
     Sections sections;
@@ -109,10 +131,12 @@ MenuModel ParseMenu(const std::wstring& text) {
     }
 
     // Top-level items: sections with no backslash, in file order.
-    // Submenu resolution is added in Task 3.
     for (auto& s : sections) {
         if (s.first.find(L'\\') != std::wstring::npos) continue;
-        m.items.push_back(BuildItem(s.second));
+        MenuItem it = BuildItem(s.second);
+        if (const std::wstring* sub = FindVal(s.second, L"submenu"))
+            it.submenu = BuildGroup(sections, *sub);
+        m.items.push_back(std::move(it));
     }
     return m;
 }

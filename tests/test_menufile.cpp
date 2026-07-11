@@ -35,10 +35,24 @@ static void test_items() {
     assert(m.items[2].disabled==true && m.items[2].text==L"Nope");
 }
 
+static void test_submenu() {
+    MenuModel m = ParseMenu(
+        L"[Tools]\nText=Tools\nSubmenu=Tools\n"
+        L"[Tools\\Edit]\nText=Edit\nBang=!EditSkin\n"
+        L"[Tools\\More]\nText=More\nSubmenu=Tools\\More\n"
+        L"[Tools\\More\\Log]\nText=Log\nBang=!Log\n");
+    assert(m.items.size()==1);
+    assert(m.items[0].text==L"Tools" && m.items[0].submenu.size()==2);
+    assert(m.items[0].submenu[0].text==L"Edit" && m.items[0].submenu[0].bang==L"!EditSkin");
+    assert(m.items[0].submenu[1].text==L"More" && m.items[0].submenu[1].submenu.size()==1);
+    assert(m.items[0].submenu[1].submenu[0].text==L"Log");
+}
+
 int main() {
     test_color();
     test_theme_defaults_and_overrides();
     test_items();
+    test_submenu();
     std::printf("ALL PASS\n");
     return 0;
 }
