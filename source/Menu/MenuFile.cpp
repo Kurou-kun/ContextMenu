@@ -2,6 +2,10 @@
 #include <algorithm>
 #include <cwctype>
 #include <cwchar>
+#include <utility>
+
+using KeyVals = std::vector<std::pair<std::wstring, std::wstring>>;
+using Sections = std::vector<std::pair<std::wstring, KeyVals>>;
 
 namespace cm {
 
@@ -62,8 +66,27 @@ static void ApplyThemeKey(Theme& t, const std::wstring& key, const std::wstring&
     else if (k == L"maxwidth")          t.maxWidth = ParseInt(val, t.maxWidth);
 }
 
+static bool Truthy(const std::wstring& v) {
+    std::wstring s = Lower(Trim(v));
+    return s == L"1" || s == L"true" || s == L"yes";
+}
+
+static MenuItem BuildItem(const KeyVals& kv) {
+    MenuItem it;
+    for (auto& p : kv) {
+        std::wstring k = Lower(p.first);
+        if      (k == L"text")      it.text = p.second;
+        else if (k == L"bang")      it.bang = p.second;
+        else if (k == L"icon")      it.icon = p.second;
+        else if (k == L"separator") it.separator = Truthy(p.second);
+        else if (k == L"disabled")  it.disabled = Truthy(p.second);
+    }
+    return it;
+}
+
 MenuModel ParseMenu(const std::wstring& text) {
     MenuModel m;
+    Sections sections;
     std::wstring section;
     size_t i = 0;
     while (i < text.size()) {
@@ -73,6 +96,8 @@ MenuModel ParseMenu(const std::wstring& text) {
         if (line.empty() || line[0] == L';' || line[0] == L'#') continue;
         if (line.front() == L'[' && line.back() == L']') {
             section = Trim(line.substr(1, line.size() - 2));
+            if (Lower(section) != L"menu")
+                sections.emplace_back(section, KeyVals{});
             continue;
         }
         size_t eq = line.find(L'=');
@@ -80,7 +105,14 @@ MenuModel ParseMenu(const std::wstring& text) {
         std::wstring key = Trim(line.substr(0, eq));
         std::wstring val = Trim(line.substr(eq + 1));
         if (Lower(section) == L"menu") ApplyThemeKey(m.theme, key, val);
-        // else: item sections handled in Task 2
+        else if (!sections.empty()) sections.back().second.emplace_back(key, val);
+    }
+
+    // Top-level items: sections with no backslash, in file order.
+    // Submenu resolution is added in Task 3.
+    for (auto& s : sections) {
+        if (s.first.find(L'\\') != std::wstring::npos) continue;
+        m.items.push_back(BuildItem(s.second));
     }
     return m;
 }

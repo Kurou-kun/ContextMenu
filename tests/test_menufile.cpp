@@ -22,9 +22,23 @@ static void test_theme_defaults_and_overrides() {
     assert(m.theme.cornerRadius==8);       // untouched default
 }
 
+static void test_items() {
+    MenuModel m = ParseMenu(
+        L"[Menu]\nBgColor=1,2,3\n"
+        L"[Refresh]\nText=Refresh skin\nBang=!Refresh\nIcon=a.png\n"
+        L"[Sep1]\nSeparator=1\n"
+        L"[Gone]\nText=Nope\nDisabled=1\n");
+    assert(m.items.size()==3);
+    assert(m.items[0].text==L"Refresh skin" && m.items[0].bang==L"!Refresh" && m.items[0].icon==L"a.png");
+    assert(m.items[0].separator==false && m.items[0].disabled==false);
+    assert(m.items[1].separator==true);
+    assert(m.items[2].disabled==true && m.items[2].text==L"Nope");
+}
+
 int main() {
     test_color();
     test_theme_defaults_and_overrides();
+    test_items();
     std::printf("ALL PASS\n");
     return 0;
 }
