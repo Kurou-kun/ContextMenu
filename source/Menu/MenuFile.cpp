@@ -1,8 +1,10 @@
 #include "Menu/MenuFile.h"
+#include <windows.h>
 #include <algorithm>
 #include <cwctype>
 #include <cwchar>
 #include <utility>
+#include <vector>
 
 using KeyVals = std::vector<std::pair<std::wstring, std::wstring>>;
 using Sections = std::vector<std::pair<std::wstring, KeyVals>>;
@@ -139,6 +141,40 @@ MenuModel ParseMenu(const std::wstring& text) {
         m.items.push_back(std::move(it));
     }
     return m;
+}
+
+std::wstring DecodeBytes(const std::string& bytes) {
+    // UTF-16LE BOM
+    if (bytes.size() >= 2 && (unsigned char)bytes[0] == 0xFF && (unsigned char)bytes[1] == 0xFE) {
+        const wchar_t* p = reinterpret_cast<const wchar_t*>(bytes.data() + 2);
+        size_t n = (bytes.size() - 2) / sizeof(wchar_t);
+        return std::wstring(p, n);
+    }
+    // UTF-8, optionally with BOM
+    size_t off = 0;
+    if (bytes.size() >= 3 && (unsigned char)bytes[0] == 0xEF &&
+        (unsigned char)bytes[1] == 0xBB && (unsigned char)bytes[2] == 0xBF)
+        off = 3;
+    int len = (int)(bytes.size() - off);
+    if (len <= 0) return std::wstring();
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, bytes.data() + off, len, nullptr, 0);
+    std::wstring out(wlen, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, bytes.data() + off, len, out.data(), wlen);
+    return out;
+}
+
+bool ReadMenuFile(const std::wstring& path, std::wstring& out) {
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    std::string bytes;
+    char buf[4096];
+    DWORD got = 0;
+    while (ReadFile(h, buf, sizeof(buf), &got, nullptr) && got > 0)
+        bytes.append(buf, got);
+    CloseHandle(h);
+    out = DecodeBytes(bytes);
+    return true;
 }
 
 } // namespace cm

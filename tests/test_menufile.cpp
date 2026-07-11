@@ -48,11 +48,23 @@ static void test_submenu() {
     assert(m.items[0].submenu[1].submenu[0].text==L"Log");
 }
 
+static void test_decode() {
+    std::string utf8 = "\xEF\xBB\xBF[Menu]\nFontFace=\xC3\x81""bc\n"; // UTF-8 BOM + U+00C1 "bc"
+    std::wstring w = DecodeBytes(utf8);
+    MenuModel m = ParseMenu(w);
+    assert(m.theme.fontFace == L"Ábc");
+    std::string u16; // UTF-16LE BOM "AB"
+    u16.push_back((char)0xFF); u16.push_back((char)0xFE);
+    u16 += std::string("A\0B\0", 4);
+    assert(DecodeBytes(u16) == L"AB");
+}
+
 int main() {
     test_color();
     test_theme_defaults_and_overrides();
     test_items();
     test_submenu();
+    test_decode();
     std::printf("ALL PASS\n");
     return 0;
 }
