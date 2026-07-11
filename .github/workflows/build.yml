@@ -1,0 +1,30 @@
+name: Build ContextMenu
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build
+        run: msbuild ContextMenu.vcxproj /p:Configuration=Release /p:Platform=x64 /m
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ContextMenu
+          path: |
+            x64/Release/*.dll
+            x64/Release/*.pdb
