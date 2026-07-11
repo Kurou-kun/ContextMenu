@@ -9,10 +9,6 @@
 *.user
 *.userosscache
 *.sln.docstates
-*.rc
-*.slnx
-*.vcxproj
-*.vcxproj.filters
 *.vcxproj.users
 *.aps
 *.zip
