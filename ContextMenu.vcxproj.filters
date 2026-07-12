@@ -24,6 +24,9 @@
     <ClCompile Include="source\Host\MenuHost.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="source\Render\PopupWindow.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="source\Plugin\Plugin.h">
@@ -36,6 +39,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="source\Host\MenuHost.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="source\Render\PopupWindow.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

@@ -105,6 +105,7 @@
     <ClCompile Include="source\Plugin\Plugin.cpp" />
     <ClCompile Include="source\Menu\MenuFile.cpp" />
     <ClCompile Include="source\Host\MenuHost.cpp" />
+    <ClCompile Include="source\Render\PopupWindow.cpp" />
   </ItemGroup>
 
   <!-- Header Files -->
@@ -113,6 +114,7 @@
     <ClInclude Include="source\Menu\MenuModel.h" />
     <ClInclude Include="source\Menu\MenuFile.h" />
     <ClInclude Include="source\Host\MenuHost.h" />
+    <ClInclude Include="source\Render\PopupWindow.h" />
   </ItemGroup>
 
   <!-- Resource Files -->

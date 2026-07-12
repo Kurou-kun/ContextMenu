@@ -1,10 +1,10 @@
 #include "Host/MenuHost.h"
 #include "Menu/MenuFile.h"
+#include "Render/PopupWindow.h"
 
 #include <commctrl.h>
 #include <windowsx.h>
 #include <unordered_map>
-#include <cstdio>
 
 #pragma comment(lib, "comctl32.lib")
 
@@ -76,11 +76,11 @@ LRESULT CALLBACK MenuHost::SubProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
     }
 }
 
-void MenuHost::ShowMenu(POINT /*screenPt*/) {
+void MenuHost::ShowMenu(POINT screenPt) {
     std::wstring text;
-    cm::MenuModel model;
-    if (cm::ReadMenuFile(menuPath_, text)) model = cm::ParseMenu(text);
-    wchar_t buf[128];
-    swprintf(buf, 128, L"ContextMenu: %zu items", model.items.size());
-    MessageBoxW(hwnd_, buf, L"ContextMenu (stub)", MB_OK);
+    if (!cm::ReadMenuFile(menuPath_, text)) return;
+    cm::MenuModel model = cm::ParseMenu(text);
+    if (model.items.empty()) return;
+    PopupWindow popup(hwnd_, skin_, rm_);
+    popup.Show(model, screenPt);
 }
