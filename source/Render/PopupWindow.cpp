@@ -4,11 +4,34 @@
 #include <shellscalingapi.h>
 #include <windowsx.h>
 #include <mutex>
+#include <algorithm>
+#include "RainmeterAPI.h"
 
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "shcore.lib")
 
 using namespace Gdiplus;
+
+// Load an icon file into a GDI+ bitmap. .ico goes via LoadImage (picks the
+// closest embedded size); .png/.bmp/others load directly. Returns null on any
+// failure so a bad path just leaves the row text-only.
+static Bitmap* LoadIconBitmap(const std::wstring& path, int px) {
+    size_t dot = path.find_last_of(L'.');
+    std::wstring ext = dot == std::wstring::npos ? L"" : path.substr(dot + 1);
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+
+    if (ext == L"ico") {
+        HICON h = (HICON)LoadImageW(nullptr, path.c_str(), IMAGE_ICON, px, px, LR_LOADFROMFILE);
+        if (!h) return nullptr;
+        Bitmap* bmp = Bitmap::FromHICON(h);
+        DestroyIcon(h);
+        if (bmp && bmp->GetLastStatus() != Ok) { delete bmp; return nullptr; }
+        return bmp;
+    }
+    Bitmap* bmp = Bitmap::FromFile(path.c_str());
+    if (bmp && bmp->GetLastStatus() != Ok) { delete bmp; return nullptr; }
+    return bmp;
+}
 
 // GDI+ started once, never shut down: the DLL lives for the whole Rainmeter
 // process and GdiplusShutdown on unload is fragile. ponytail: leak the token.
@@ -96,6 +119,7 @@ void PopupWindow::Paint() {
         Graphics g(&surface);
         g.SetSmoothingMode(SmoothingModeAntiAlias);
         g.SetTextRenderingHint(TextRenderingHintAntiAlias);
+        g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
         g.Clear(Gdiplus::Color(0, 0, 0, 0));
 
         FontFamily family(th.fontFace.c_str());
@@ -149,8 +173,14 @@ void PopupWindow::Paint() {
                 AddRoundRect(hp, hr, (REAL)(radius / 2));
                 g.FillPath(&hoverBg, &hp);
             }
-            RectF tr((REAL)(margin + pad), (REAL)r.top,
-                     (REAL)(bodyW_ - 2 * pad), (REAL)(r.bottom - r.top));
+            if (hasIcons_ && icons_[i]) {
+                int ix = margin + (iconSlot_ - iconPx_) / 2;
+                int iy = r.top + ((r.bottom - r.top) - iconPx_) / 2;
+                g.DrawImage(icons_[i].get(), Rect(ix, iy, iconPx_, iconPx_));
+            }
+            int gutter = hasIcons_ ? iconSlot_ : pad;
+            RectF tr((REAL)(margin + gutter), (REAL)r.top,
+                     (REAL)(bodyW_ - gutter - pad), (REAL)(r.bottom - r.top));
             SolidBrush* brush = it.disabled ? &disBrush : (hot ? &hoverText : &textBrush);
             g.DrawString(it.text.c_str(), -1, &font, tr, &sf, brush);
         }
@@ -187,6 +217,22 @@ std::wstring PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
     const int itemH = (int)(th.itemHeight * scale_);
     const int sepH  = (int)(9 * scale_);
 
+    // Resolve + load per-item icons (Rainmeter vars → absolute path). A menu
+    // with any loadable icon reserves a square gutter on the left of every row.
+    const int iconPad = (int)(5 * scale_);
+    iconPx_ = (std::max)(1, itemH - 2 * iconPad);
+    icons_.clear();
+    hasIcons_ = false;
+    for (const auto& it : model.items) {
+        if (it.icon.empty()) { icons_.emplace_back(); continue; }
+        LPCWSTR v = RmReplaceVariables(rm_, it.icon.c_str());
+        LPCWSTR abs = RmPathToAbsolute(rm_, v);
+        Bitmap* bmp = LoadIconBitmap(abs ? abs : (v ? v : L""), iconPx_);
+        if (bmp) hasIcons_ = true;
+        icons_.emplace_back(bmp);
+    }
+    iconSlot_ = hasIcons_ ? itemH : 0;
+
     hwnd_ = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
         kClass, L"", WS_POPUP, 0, 0, 0, 0,
@@ -209,7 +255,8 @@ std::wstring PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
         textMax = (std::max)(textMax, (int)(box.Width + 0.5f));
         bodyH_ += itemH;
     }
-    bodyW_ = textMax + 2 * pad_;
+    const int leftGutter = hasIcons_ ? iconSlot_ : pad_;
+    bodyW_ = leftGutter + textMax + pad_;
     int maxW = (int)(th.maxWidth * scale_);
     if (bodyW_ > maxW) bodyW_ = maxW;
     if (bodyW_ < 2 * pad_) bodyW_ = 2 * pad_;

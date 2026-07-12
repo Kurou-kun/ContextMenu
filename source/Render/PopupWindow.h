@@ -2,7 +2,10 @@
 #include <windows.h>
 #include <string>
 #include <vector>
+#include <memory>
 #include "Menu/MenuModel.h"
+
+namespace Gdiplus { class Bitmap; }
 
 // A layered GDI+ popup that renders a MenuModel and blocks until dismissed.
 // Handles hover highlight, click-to-invoke (resolves + runs the item bang via
@@ -29,10 +32,15 @@ private:
     std::vector<RECT>    itemRects_;  // client-relative row rects, per item
     int   hovered_ = -1;
 
+    // Per-item icons (aligned with model_->items; null slots = no/failed icon).
+    std::vector<std::unique_ptr<Gdiplus::Bitmap>> icons_;
+    bool hasIcons_ = false;
+
     // Geometry cached for repaint (all pixels, DPI-scaled).
     double scale_ = 1.0;
     int winW_ = 0, winH_ = 0, winX_ = 0, winY_ = 0;
     int bodyW_ = 0, bodyH_ = 0, margin_ = 0, pad_ = 0, radius_ = 0;
+    int iconSlot_ = 0, iconPx_ = 0;
     float emPx_ = 0;
 
     void Paint();
