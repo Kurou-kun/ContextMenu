@@ -2,6 +2,7 @@
 
 #include <gdiplus.h>
 #include <shellscalingapi.h>
+#include <windowsx.h>
 #include <mutex>
 
 #pragma comment(lib, "gdiplus.lib")
@@ -60,70 +61,26 @@ PopupWindow::~PopupWindow() {
     if (hwnd_) DestroyWindow(hwnd_);
 }
 
-void PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
-    EnsureGdiplus();
-    RegisterPopupClass();
-
-    const cm::Theme& th = model.theme;
-
-    // DPI scale for the target monitor.
-    HMONITOR mon = MonitorFromPoint(anchor, MONITOR_DEFAULTTONEAREST);
-    UINT dpiX = 96, dpiY = 96;
-    GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &dpiX, &dpiY);
-    double scale = dpiX / 96.0;
-
-    const int pad     = (int)(th.padding * scale);
-    const int itemH   = (int)(th.itemHeight * scale);
-    const int sepH    = (int)(9 * scale);
-    const int margin  = (int)(th.shadowBlur * scale);   // shadow breathing room
-    const int radius  = (int)(th.cornerRadius * scale);
-    const REAL emPx   = (REAL)(th.fontSize * scale * 96.0 / 72.0);
-
-    hwnd_ = CreateWindowExW(
-        WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
-        kClass, L"", WS_POPUP, 0, 0, 0, 0,
-        owner_, nullptr, GetModuleHandleW(nullptr), nullptr);
-    if (!hwnd_) return;
-
-    // Measure text to size the body. Use a throwaway 1x1 surface for metrics.
-    Bitmap probe(1, 1, PixelFormat32bppPARGB);
-    Graphics gm(&probe);
-    gm.SetTextRenderingHint(TextRenderingHintAntiAlias);
-    FontFamily family(th.fontFace.c_str());
-    Font font(&family, emPx, FontStyleRegular, UnitPixel);
-
-    int textMax = 0, bodyH = 0;
-    for (const auto& it : model.items) {
-        if (it.separator) { bodyH += sepH; continue; }
-        RectF box;
-        gm.MeasureString(it.text.c_str(), -1, &font, PointF(0, 0), &box);
-        textMax = (std::max)(textMax, (int)(box.Width + 0.5f));
-        bodyH += itemH;
+int PopupWindow::HitTest(POINT p) const {
+    for (size_t i = 0; i < itemRects_.size(); ++i) {
+        const RECT& r = itemRects_[i];
+        if (p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom) {
+            const cm::MenuItem& it = model_->items[i];
+            if (it.separator || it.disabled) return -1;
+            return (int)i;
+        }
     }
-    int bodyW = textMax + 2 * pad;
-    int maxW = (int)(th.maxWidth * scale);
-    if (bodyW > maxW) bodyW = maxW;
-    if (bodyW < 2 * pad) bodyW = 2 * pad;
+    return -1;
+}
 
-    const int winW = bodyW + 2 * margin;
-    const int winH = bodyH + 2 * margin;
+void PopupWindow::Paint() {
+    const cm::Theme& th = model_->theme;
+    const int pad = pad_, margin = margin_, radius = radius_;
 
-    // Position: body top-left at the cursor, clamped to the monitor work area.
-    MONITORINFO mi{ sizeof(mi) };
-    GetMonitorInfoW(mon, &mi);
-    int bodyX = anchor.x, bodyY = anchor.y;
-    if (bodyX + bodyW > mi.rcWork.right)  bodyX = mi.rcWork.right - bodyW;
-    if (bodyY + bodyH > mi.rcWork.bottom) bodyY = mi.rcWork.bottom - bodyH;
-    if (bodyX < mi.rcWork.left) bodyX = mi.rcWork.left;
-    if (bodyY < mi.rcWork.top)  bodyY = mi.rcWork.top;
-    const int winX = bodyX - margin;
-    const int winY = bodyY - margin;
-
-    // Premultiplied ARGB DIB we render into and hand to UpdateLayeredWindow.
     BITMAPINFO bmi{};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = winW;
-    bmi.bmiHeader.biHeight = -winH; // top-down
+    bmi.bmiHeader.biWidth = winW_;
+    bmi.bmiHeader.biHeight = -winH_; // top-down
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
@@ -135,31 +92,33 @@ void PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
     HGDIOBJ oldBmp = SelectObject(memDC, dib);
 
     {
-        Bitmap surface(winW, winH, winW * 4, PixelFormat32bppPARGB, (BYTE*)bits);
+        Bitmap surface(winW_, winH_, winW_ * 4, PixelFormat32bppPARGB, (BYTE*)bits);
         Graphics g(&surface);
         g.SetSmoothingMode(SmoothingModeAntiAlias);
         g.SetTextRenderingHint(TextRenderingHintAntiAlias);
         g.Clear(Gdiplus::Color(0, 0, 0, 0));
 
-        RectF bodyRect((REAL)margin, (REAL)margin, (REAL)bodyW, (REAL)bodyH);
+        FontFamily family(th.fontFace.c_str());
+        Font font(&family, emPx_, FontStyleRegular, UnitPixel);
 
-        // Soft shadow: a single offset, semi-transparent rounded rect. v1 good-enough.
+        RectF bodyRect((REAL)margin, (REAL)margin, (REAL)bodyW_, (REAL)bodyH_);
+
+        // Soft shadow: single offset, semi-transparent rounded rect. v1 good-enough.
         {
             RectF sh = bodyRect;
-            sh.Offset(0, (REAL)(2 * scale));
+            sh.Offset(0, (REAL)(2 * scale_));
             GraphicsPath sp;
             AddRoundRect(sp, sh, (REAL)radius);
             SolidBrush shb(G(th.shadow));
             g.FillPath(&shb, &sp);
         }
 
-        // Body fill + border.
         GraphicsPath body;
         AddRoundRect(body, bodyRect, (REAL)radius);
         SolidBrush bgb(G(th.bg));
         g.FillPath(&bgb, &body);
         if (th.borderWidth > 0) {
-            Pen border(G(th.border), (REAL)(th.borderWidth * scale));
+            Pen border(G(th.border), (REAL)(th.borderWidth * scale_));
             g.DrawPath(&border, &body);
         }
 
@@ -168,31 +127,37 @@ void PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
         sf.SetLineAlignment(StringAlignmentCenter);
         sf.SetFormatFlags(StringFormatFlagsNoWrap);
         SolidBrush textBrush(G(th.text));
+        SolidBrush hoverText(G(th.hoverText));
         SolidBrush disBrush(G(th.disabledText));
-        Pen sepPen(G(th.separator), 1.0f * (REAL)scale);
+        SolidBrush hoverBg(G(th.hoverBg));
+        Pen sepPen(G(th.separator), 1.0f * (REAL)scale_);
 
-        itemRects_.clear();
-        int y = margin;
-        for (const auto& it : model.items) {
-            int h = it.separator ? sepH : itemH;
-            RECT screenRect{ bodyX + pad, winY + y, bodyX + bodyW - pad, winY + y + h };
-            itemRects_.push_back(screenRect);
+        for (size_t i = 0; i < model_->items.size(); ++i) {
+            const cm::MenuItem& it = model_->items[i];
+            const RECT& r = itemRects_[i]; // client coords
             if (it.separator) {
-                REAL cy = (REAL)(y + h / 2);
+                REAL cy = (REAL)((r.top + r.bottom) / 2);
                 g.DrawLine(&sepPen, (REAL)(margin + pad), cy,
-                                    (REAL)(margin + bodyW - pad), cy);
-            } else {
-                RectF tr((REAL)(margin + pad), (REAL)y,
-                         (REAL)(bodyW - 2 * pad), (REAL)h);
-                g.DrawString(it.text.c_str(), -1, &font, tr,
-                             &sf, it.disabled ? &disBrush : &textBrush);
+                                    (REAL)(margin + bodyW_ - pad), cy);
+                continue;
             }
-            y += h;
+            bool hot = ((int)i == hovered_);
+            if (hot) {
+                GraphicsPath hp;
+                RectF hr((REAL)r.left, (REAL)r.top,
+                         (REAL)(r.right - r.left), (REAL)(r.bottom - r.top));
+                AddRoundRect(hp, hr, (REAL)(radius / 2));
+                g.FillPath(&hoverBg, &hp);
+            }
+            RectF tr((REAL)(margin + pad), (REAL)r.top,
+                     (REAL)(bodyW_ - 2 * pad), (REAL)(r.bottom - r.top));
+            SolidBrush* brush = it.disabled ? &disBrush : (hot ? &hoverText : &textBrush);
+            g.DrawString(it.text.c_str(), -1, &font, tr, &sf, brush);
         }
     } // surface flushes to `bits`
 
-    POINT ptDst{ winX, winY };
-    SIZE  size{ winW, winH };
+    POINT ptDst{ winX_, winY_ };
+    SIZE  size{ winW_, winH_ };
     POINT ptSrc{ 0, 0 };
     BLENDFUNCTION bf{ AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
     UpdateLayeredWindow(hwnd_, screenDC, &ptDst, &size, memDC, &ptSrc, 0, &bf, ULW_ALPHA);
@@ -201,18 +166,101 @@ void PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
     DeleteObject(dib);
     DeleteDC(memDC);
     ReleaseDC(nullptr, screenDC);
+}
 
+std::wstring PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
+    EnsureGdiplus();
+    RegisterPopupClass();
+    model_ = &model;
+
+    const cm::Theme& th = model.theme;
+
+    HMONITOR mon = MonitorFromPoint(anchor, MONITOR_DEFAULTTONEAREST);
+    UINT dpiX = 96, dpiY = 96;
+    GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &dpiX, &dpiY);
+    scale_ = dpiX / 96.0;
+
+    pad_    = (int)(th.padding * scale_);
+    margin_ = (int)(th.shadowBlur * scale_);
+    radius_ = (int)(th.cornerRadius * scale_);
+    emPx_   = (REAL)(th.fontSize * scale_ * 96.0 / 72.0);
+    const int itemH = (int)(th.itemHeight * scale_);
+    const int sepH  = (int)(9 * scale_);
+
+    hwnd_ = CreateWindowExW(
+        WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+        kClass, L"", WS_POPUP, 0, 0, 0, 0,
+        owner_, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (!hwnd_) return L"";
+
+    // Measure text to size the body.
+    Bitmap probe(1, 1, PixelFormat32bppPARGB);
+    Graphics gm(&probe);
+    gm.SetTextRenderingHint(TextRenderingHintAntiAlias);
+    FontFamily family(th.fontFace.c_str());
+    Font font(&family, emPx_, FontStyleRegular, UnitPixel);
+
+    int textMax = 0;
+    bodyH_ = 0;
+    for (const auto& it : model.items) {
+        if (it.separator) { bodyH_ += sepH; continue; }
+        RectF box;
+        gm.MeasureString(it.text.c_str(), -1, &font, PointF(0, 0), &box);
+        textMax = (std::max)(textMax, (int)(box.Width + 0.5f));
+        bodyH_ += itemH;
+    }
+    bodyW_ = textMax + 2 * pad_;
+    int maxW = (int)(th.maxWidth * scale_);
+    if (bodyW_ > maxW) bodyW_ = maxW;
+    if (bodyW_ < 2 * pad_) bodyW_ = 2 * pad_;
+
+    winW_ = bodyW_ + 2 * margin_;
+    winH_ = bodyH_ + 2 * margin_;
+
+    // Position: body top-left at cursor, clamped to the monitor work area.
+    MONITORINFO mi{ sizeof(mi) };
+    GetMonitorInfoW(mon, &mi);
+    int bodyX = anchor.x, bodyY = anchor.y;
+    if (bodyX + bodyW_ > mi.rcWork.right)  bodyX = mi.rcWork.right - bodyW_;
+    if (bodyY + bodyH_ > mi.rcWork.bottom) bodyY = mi.rcWork.bottom - bodyH_;
+    if (bodyX < mi.rcWork.left) bodyX = mi.rcWork.left;
+    if (bodyY < mi.rcWork.top)  bodyY = mi.rcWork.top;
+    winX_ = bodyX - margin_;
+    winY_ = bodyY - margin_;
+
+    // Item row rects in client coords (0,0 = window top-left = winX_,winY_).
+    itemRects_.clear();
+    int y = margin_;
+    for (const auto& it : model.items) {
+        int h = it.separator ? sepH : itemH;
+        itemRects_.push_back(RECT{ margin_, y, margin_ + bodyW_, y + h });
+        y += h;
+    }
+
+    Paint();
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 
     // Local pump. Capture routes outside clicks to us so click-away dismisses.
-    // Task 7 turns clicks into hit-test + invoke; for now any click closes.
     SetCapture(hwnd_);
     done_ = false;
+    int clicked = -1;
     MSG msg;
     while (!done_ && GetMessageW(&msg, nullptr, 0, 0)) {
         switch (msg.message) {
-        case WM_LBUTTONDOWN: case WM_LBUTTONUP:
-        case WM_RBUTTONDOWN: case WM_RBUTTONUP:
+        case WM_MOUSEMOVE: {
+            POINT p{ GET_X_LPARAM(msg.lParam), GET_Y_LPARAM(msg.lParam) };
+            int h = HitTest(p);
+            if (h != hovered_) { hovered_ = h; Paint(); }
+            break;
+        }
+        case WM_LBUTTONUP: {
+            POINT p{ GET_X_LPARAM(msg.lParam), GET_Y_LPARAM(msg.lParam) };
+            int h = HitTest(p);
+            if (h >= 0) { clicked = h; done_ = true; }   // invoke after teardown
+            else        { done_ = true; }                // click-away
+            break;
+        }
+        case WM_RBUTTONUP:
         case WM_MBUTTONDOWN:
             done_ = true;
             break;
@@ -222,9 +270,17 @@ void PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
         case WM_CAPTURECHANGED:
             done_ = true;
             break;
+        case WM_ACTIVATEAPP:
+            if (msg.wParam == FALSE) done_ = true;
+            break;
         }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
     ReleaseCapture();
+
+    // Tear the window down first so the bang's effect shows against a clean
+    // screen. The caller runs the bang after we return (see header).
+    if (hwnd_) { DestroyWindow(hwnd_); hwnd_ = nullptr; }
+    return clicked >= 0 ? model_->items[clicked].bang : std::wstring();
 }

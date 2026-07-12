@@ -16,8 +16,23 @@ static std::wstring ReadMenuPath(void* rm)
     return p ? std::wstring(p) : std::wstring();
 }
 
+// Rainmeter FreeLibrary()s the plugin on skin refresh, but our window subclass,
+// popup window class, and GDI+ leave code/callbacks that must outlive that. Pin
+// the module so it stays mapped for the process lifetime — a stale wndproc in an
+// unloaded image is a guaranteed crash-on-refresh otherwise.
+static void PinSelf()
+{
+    static bool pinned = false;
+    if (pinned) return;
+    pinned = true;
+    HMODULE self = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                       reinterpret_cast<LPCWSTR>(&PinSelf), &self);
+}
+
 PLUGIN_EXPORT void Initialize(void** data, void* rm)
 {
+    PinSelf();
     auto* ctx = new MeasureContext();
     ctx->rm   = rm;
     ctx->skin = RmGetSkin(rm);

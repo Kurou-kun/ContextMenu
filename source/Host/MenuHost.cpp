@@ -1,6 +1,7 @@
 #include "Host/MenuHost.h"
 #include "Menu/MenuFile.h"
 #include "Render/PopupWindow.h"
+#include "RainmeterAPI.h"
 
 #include <commctrl.h>
 #include <windowsx.h>
@@ -18,12 +19,14 @@ MenuHost* MenuHost::Attach(HWND hwnd, void* skin, void* rm, const std::wstring& 
         ++it->second->refs_;
         return it->second;
     }
+    RmLog(rm, LOG_NOTICE, L"[CM] Attach: begin (new host)");
     auto* host = new MenuHost();
     host->hwnd_ = hwnd;
     host->SetActive(skin, rm, menuPath);
     host->refs_ = 1;
     g_hosts[hwnd] = host;
     SetWindowSubclass(hwnd, &MenuHost::SubProc, kSubclassId, reinterpret_cast<DWORD_PTR>(host));
+    RmLog(rm, LOG_NOTICE, L"[CM] Attach: subclassed");
     return host;
 }
 
@@ -37,10 +40,15 @@ void MenuHost::Detach(HWND hwnd) {
     auto it = g_hosts.find(hwnd);
     if (it == g_hosts.end()) return;
     MenuHost* host = it->second;
-    if (--host->refs_ > 0) return;
+    RmLog(host->rm_, LOG_NOTICE, L"[CM] Detach: begin");
+    if (--host->refs_ > 0) { RmLog(host->rm_, LOG_NOTICE, L"[CM] Detach: still refd"); return; }
     RemoveWindowSubclass(hwnd, &MenuHost::SubProc, kSubclassId);
+    void* rm = host->rm_;
+    RmLog(rm, LOG_NOTICE, L"[CM] Detach: subclass removed");
     g_hosts.erase(it);
+    RmLog(rm, LOG_NOTICE, L"[CM] Detach: erased map");
     delete host;
+    RmLog(rm, LOG_NOTICE, L"[CM] Detach: deleted host");
 }
 
 LRESULT CALLBACK MenuHost::SubProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
@@ -82,5 +90,14 @@ void MenuHost::ShowMenu(POINT screenPt) {
     cm::MenuModel model = cm::ParseMenu(text);
     if (model.items.empty()) return;
     PopupWindow popup(hwnd_, skin_, rm_);
-    popup.Show(model, screenPt);
+    std::wstring bang = popup.Show(model, screenPt);
+    if (bang.empty()) return;
+
+    // RmExecute is async (posts the bang), so calling it straight from the
+    // right-click handler is safe: the WM_NCRBUTTONUP frame unwinds before the
+    // refresh runs, and the DLL is pinned (Plugin.cpp) so an unload/reload
+    // during refresh can't strand our subclass proc.
+    LPCWSTR resolved = RmReplaceVariables(rm_, bang.c_str());
+    RmLog(rm_, LOG_NOTICE, (L"[CM] ShowMenu: execute " + std::wstring(resolved)).c_str());
+    RmExecute(skin_, resolved);
 }
