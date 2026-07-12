@@ -96,6 +96,15 @@ int PopupWindow::HitTest(POINT p) const {
     return -1;
 }
 
+int PopupWindow::HitTestScreen(POINT sp) const {
+    return HitTest(POINT{ sp.x - winX_, sp.y - winY_ });
+}
+
+bool PopupWindow::ContainsScreen(POINT sp) const {
+    int bx = winX_ + margin_, by = winY_ + margin_;
+    return sp.x >= bx && sp.x < bx + bodyW_ && sp.y >= by && sp.y < by + bodyH_;
+}
+
 void PopupWindow::Paint() {
     const cm::Theme& th = model_->theme;
     const int pad = pad_, margin = margin_, radius = radius_;
@@ -180,9 +189,17 @@ void PopupWindow::Paint() {
             }
             int gutter = hasIcons_ ? iconSlot_ : pad;
             RectF tr((REAL)(margin + gutter), (REAL)r.top,
-                     (REAL)(bodyW_ - gutter - pad), (REAL)(r.bottom - r.top));
+                     (REAL)(bodyW_ - gutter - pad - chevronReserve_), (REAL)(r.bottom - r.top));
             SolidBrush* brush = it.disabled ? &disBrush : (hot ? &hoverText : &textBrush);
             g.DrawString(it.text.c_str(), -1, &font, tr, &sf, brush);
+
+            if (!it.submenu.empty()) {   // right-pointing chevron
+                REAL cx = (REAL)(margin + bodyW_ - pad);
+                REAL cy = (REAL)((r.top + r.bottom) / 2);
+                REAL s  = (REAL)(4 * scale_);
+                PointF tri[3] = { { cx - s, cy - s }, { cx, cy }, { cx - s, cy + s } };
+                g.FillPolygon(hot ? &hoverText : &textBrush, tri, 3);
+            }
         }
     } // surface flushes to `bits`
 
@@ -198,7 +215,7 @@ void PopupWindow::Paint() {
     ReleaseDC(nullptr, screenDC);
 }
 
-std::wstring PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
+void PopupWindow::Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu, int parentLeftX) {
     EnsureGdiplus();
     RegisterPopupClass();
     model_ = &model;
@@ -223,7 +240,9 @@ std::wstring PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
     iconPx_ = (std::max)(1, itemH - 2 * iconPad);
     icons_.clear();
     hasIcons_ = false;
+    bool hasSub = false;
     for (const auto& it : model.items) {
+        if (!it.submenu.empty()) hasSub = true;
         if (it.icon.empty()) { icons_.emplace_back(); continue; }
         LPCWSTR v = RmReplaceVariables(rm_, it.icon.c_str());
         LPCWSTR abs = RmPathToAbsolute(rm_, v);
@@ -232,12 +251,13 @@ std::wstring PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
         icons_.emplace_back(bmp);
     }
     iconSlot_ = hasIcons_ ? itemH : 0;
+    chevronReserve_ = hasSub ? (int)(14 * scale_) : 0;
 
     hwnd_ = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
         kClass, L"", WS_POPUP, 0, 0, 0, 0,
         owner_, nullptr, GetModuleHandleW(nullptr), nullptr);
-    if (!hwnd_) return L"";
+    if (!hwnd_) return;
 
     // Measure text to size the body.
     Bitmap probe(1, 1, PixelFormat32bppPARGB);
@@ -256,7 +276,7 @@ std::wstring PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
         bodyH_ += itemH;
     }
     const int leftGutter = hasIcons_ ? iconSlot_ : pad_;
-    bodyW_ = leftGutter + textMax + pad_;
+    bodyW_ = leftGutter + textMax + chevronReserve_ + pad_;
     int maxW = (int)(th.maxWidth * scale_);
     if (bodyW_ > maxW) bodyW_ = maxW;
     if (bodyW_ < 2 * pad_) bodyW_ = 2 * pad_;
@@ -264,11 +284,20 @@ std::wstring PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
     winW_ = bodyW_ + 2 * margin_;
     winH_ = bodyH_ + 2 * margin_;
 
-    // Position: body top-left at cursor, clamped to the monitor work area.
     MONITORINFO mi{ sizeof(mi) };
     GetMonitorInfoW(mon, &mi);
-    int bodyX = anchor.x, bodyY = anchor.y;
-    if (bodyX + bodyW_ > mi.rcWork.right)  bodyX = mi.rcWork.right - bodyW_;
+    int bodyX, bodyY;
+    if (asSubmenu) {
+        // Prefer opening to the right of the parent row; flip left if it would
+        // run off the monitor (right-align the child to the parent's left edge).
+        bodyX = anchor.x;
+        if (bodyX + bodyW_ > mi.rcWork.right) bodyX = parentLeftX - bodyW_;
+        bodyY = anchor.y;
+    } else {
+        bodyX = anchor.x;
+        bodyY = anchor.y;
+        if (bodyX + bodyW_ > mi.rcWork.right)  bodyX = mi.rcWork.right - bodyW_;
+    }
     if (bodyY + bodyH_ > mi.rcWork.bottom) bodyY = mi.rcWork.bottom - bodyH_;
     if (bodyX < mi.rcWork.left) bodyX = mi.rcWork.left;
     if (bodyY < mi.rcWork.top)  bodyY = mi.rcWork.top;
@@ -286,25 +315,77 @@ std::wstring PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
 
     Paint();
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+}
 
-    // Local pump. Capture routes outside clicks to us so click-away dismisses.
+void PopupWindow::OpenChildFor(int ri) {
+    CloseChild();
+    const cm::MenuItem& it = model_->items[ri];
+    child_ = std::make_unique<PopupWindow>(hwnd_, skin_, rm_);
+    child_->owned_.theme = model_->theme;
+    child_->owned_.items = it.submenu;
+    const RECT& r = itemRects_[ri];
+    POINT anchor{ winX_ + r.right, winY_ + r.top };
+    child_->Open(child_->owned_, anchor, true, winX_ + margin_);
+    childParent_ = ri;
+}
+
+void PopupWindow::CloseChild() {
+    child_.reset();       // ~PopupWindow destroys the child window
+    childParent_ = -1;
+}
+
+std::wstring PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
+    Open(model, anchor, false, 0);
+    if (!hwnd_) return L"";
+
+    // One shared pump for the whole chain. Capture stays on the root so every
+    // mouse message (over root, child, or outside) routes here in root-client
+    // coords; we convert to screen and dispatch to the right popup ourselves.
     SetCapture(hwnd_);
     done_ = false;
-    int clicked = -1;
+    std::wstring chosen;
     MSG msg;
     while (!done_ && GetMessageW(&msg, nullptr, 0, 0)) {
         switch (msg.message) {
         case WM_MOUSEMOVE: {
-            POINT p{ GET_X_LPARAM(msg.lParam), GET_Y_LPARAM(msg.lParam) };
-            int h = HitTest(p);
-            if (h != hovered_) { hovered_ = h; Paint(); }
+            POINT sp{ GET_X_LPARAM(msg.lParam) + winX_, GET_Y_LPARAM(msg.lParam) + winY_ };
+            if (child_ && child_->ContainsScreen(sp)) {
+                int ci = child_->HitTestScreen(sp);
+                if (ci != child_->hovered_) { child_->hovered_ = ci; child_->Paint(); }
+                if (hovered_ != childParent_) { hovered_ = childParent_; Paint(); }
+            } else {
+                int ri = HitTestScreen(sp);
+                if (ri != hovered_) { hovered_ = ri; Paint(); }
+                if (ri >= 0) {
+                    if (!model_->items[ri].submenu.empty()) {
+                        if (ri != childParent_) OpenChildFor(ri);
+                    } else {
+                        CloseChild();
+                    }
+                }
+                // ri < 0 (gap/padding): keep child so diagonal travel works.
+            }
             break;
         }
         case WM_LBUTTONUP: {
-            POINT p{ GET_X_LPARAM(msg.lParam), GET_Y_LPARAM(msg.lParam) };
-            int h = HitTest(p);
-            if (h >= 0) { clicked = h; done_ = true; }   // invoke after teardown
-            else        { done_ = true; }                // click-away
+            POINT sp{ GET_X_LPARAM(msg.lParam) + winX_, GET_Y_LPARAM(msg.lParam) + winY_ };
+            if (child_ && child_->ContainsScreen(sp)) {
+                int ci = child_->HitTestScreen(sp);
+                if (ci >= 0 && child_->model_->items[ci].submenu.empty()) {
+                    chosen = child_->model_->items[ci].bang; done_ = true;
+                }
+            } else {
+                int ri = HitTestScreen(sp);
+                if (ri >= 0) {
+                    if (model_->items[ri].submenu.empty()) {
+                        chosen = model_->items[ri].bang; done_ = true;
+                    } else {
+                        OpenChildFor(ri);   // click a parent: just ensure open
+                    }
+                } else {
+                    done_ = true;           // click-away
+                }
+            }
             break;
         }
         case WM_RBUTTONUP:
@@ -326,8 +407,8 @@ std::wstring PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
     }
     ReleaseCapture();
 
-    // Tear the window down first so the bang's effect shows against a clean
-    // screen. The caller runs the bang after we return (see header).
+    // Tear the whole chain down before the caller runs the bang.
+    CloseChild();
     if (hwnd_) { DestroyWindow(hwnd_); hwnd_ = nullptr; }
-    return clicked >= 0 ? model_->items[clicked].bang : std::wstring();
+    return chosen;
 }

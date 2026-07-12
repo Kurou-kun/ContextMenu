@@ -29,8 +29,14 @@ private:
     bool  done_ = false;
 
     const cm::MenuModel* model_ = nullptr;
+    cm::MenuModel        owned_;      // backing store when this is a submenu child
     std::vector<RECT>    itemRects_;  // client-relative row rects, per item
     int   hovered_ = -1;
+
+    // Fly-out child (one level; the root routes all input via capture).
+    // ponytail: single level — deeper nesting shows a chevron but won't open.
+    std::unique_ptr<PopupWindow> child_;
+    int childParent_ = -1;            // root item index that owns child_
 
     // Per-item icons (aligned with model_->items; null slots = no/failed icon).
     std::vector<std::unique_ptr<Gdiplus::Bitmap>> icons_;
@@ -40,11 +46,17 @@ private:
     double scale_ = 1.0;
     int winW_ = 0, winH_ = 0, winX_ = 0, winY_ = 0;
     int bodyW_ = 0, bodyH_ = 0, margin_ = 0, pad_ = 0, radius_ = 0;
-    int iconSlot_ = 0, iconPx_ = 0;
+    int iconSlot_ = 0, iconPx_ = 0, chevronReserve_ = 0;
     float emPx_ = 0;
 
+    // Create + render the window without pumping (root drives one shared loop).
+    void Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu, int parentLeftX);
     void Paint();
-    int  HitTest(POINT clientPt) const;   // item index, or -1
+    int  HitTest(POINT clientPt) const;     // item index, or -1 (screen->client)
+    int  HitTestScreen(POINT screenPt) const;
+    bool ContainsScreen(POINT screenPt) const; // inside this popup's body rect
+    void OpenChildFor(int rootIndex);
+    void CloseChild();
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 };
