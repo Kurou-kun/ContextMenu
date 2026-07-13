@@ -17,6 +17,7 @@ struct BoxStyle {
     bool  cornerSet = false;   int cornerRadius = 0;
     int   shadowSize = 0;      Color shadow{0, 0, 0, 120};  int shadowOffX = 0, shadowOffY = 0;
     bool  padSet = false;      int padL = 0, padT = 0, padR = 0, padB = 0;
+    bool  heightSet = false;   int height = 0;              // separator bar thickness
 };
 
 struct Theme {

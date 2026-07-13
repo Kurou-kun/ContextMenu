@@ -92,6 +92,7 @@ static void ApplyBoxKey(BoxStyle& s, const std::wstring& key, const std::wstring
         if (stops.size() >= 2) { s.hasGradient = true; s.gradAngle = angle; s.gradStops = std::move(stops); }
     }
     else if (k == L"image")       s.image = val;
+    else if (k == L"height")      { s.height = ParseInt(val, 0); s.heightSet = true; }
     else if (k == L"stroke")      { int w; if (ParseInts(val, &w, 1) == 1 && ColorAfterFirst(val, c)) { s.strokeW = w; s.stroke = c; } }
     else if (k == L"cornerradius"){ s.cornerRadius = ParseInt(val, 0); s.cornerSet = true; }
     else if (k == L"shadow")      { int sz; if (ParseInts(val, &sz, 1) == 1 && ColorAfterFirst(val, c)) { s.shadowSize = sz; s.shadow = c; } }

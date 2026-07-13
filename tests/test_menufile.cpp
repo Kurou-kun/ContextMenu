@@ -36,6 +36,11 @@ static void test_boxstyle() {
     assert(m.items[0].box.hasColor && m.items[0].box.color.r==60 && m.items[0].box.color.b==90);
     assert(m.items[0].box.image==L"x.png");
     assert(m.items[0].box.cornerSet && m.items[0].box.cornerRadius==6);
+    // separator bar thickness
+    MenuModel s = ParseMenu(L"[Sep]\nSeparator=1\nHeight=3\nColor=90,80,120\n");
+    assert(s.items.size()==1 && s.items[0].separator);
+    assert(s.items[0].box.heightSet && s.items[0].box.height==3);
+    assert(s.items[0].box.hasColor && s.items[0].box.color.g==80);
 }
 
 static void test_items() {

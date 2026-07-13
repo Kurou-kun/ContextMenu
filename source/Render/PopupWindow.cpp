@@ -180,15 +180,25 @@ void PopupWindow::Paint() {
         SolidBrush hoverText(G(th.hoverText));
         SolidBrush disBrush(G(th.disabledText));
         SolidBrush hoverBg(G(th.hoverBg));
-        Pen sepPen(G(th.separator), 1.0f * (REAL)scale_);
 
         for (size_t i = 0; i < model_->items.size(); ++i) {
             const cm::MenuItem& it = model_->items[i];
             const RECT& r = itemRects_[i]; // client coords
             if (it.separator) {
+                const cm::BoxStyle& b = it.box;
+                REAL thick = (REAL)((b.heightSet ? b.height : 1) * scale_);
+                REAL pl = (REAL)((b.padSet ? b.padL : 8) * scale_);
+                REAL pr = (REAL)((b.padSet ? b.padR : 8) * scale_);
                 REAL cy = (REAL)((r.top + r.bottom) / 2);
-                g.DrawLine(&sepPen, (REAL)(margin + pad), cy,
-                                    (REAL)(margin + bodyW_ - pad), cy);
+                RectF bar((REAL)margin + pl, cy - thick / 2,
+                          (REAL)bodyW_ - pl - pr, thick);
+                if (b.hasColor || b.hasGradient) {
+                    int rc = b.cornerSet ? (int)(b.cornerRadius * scale_) : 0;
+                    DrawBox(g, bar, b, rc, nullptr);
+                } else {
+                    SolidBrush sb(G(th.separator));
+                    g.FillRectangle(&sb, bar);
+                }
                 continue;
             }
             RectF hr((REAL)r.left, (REAL)r.top,
@@ -251,7 +261,13 @@ void PopupWindow::Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu,
     radius_ = (int)(bg.cornerRadius * scale_);
     emPx_   = (REAL)(th.fontSize * scale_ * 96.0 / 72.0);
     const int itemH = (int)(th.itemHeight * scale_);
-    const int sepH  = (int)(9 * scale_);
+    // Separator row height = bar thickness + vertical padding (defaults reproduce
+    // the old 1px line in a 9px row).
+    auto sepRowH = [&](const cm::BoxStyle& b) {
+        int thick = b.heightSet ? b.height : 1;
+        int pt = b.padSet ? b.padT : 4, pb = b.padSet ? b.padB : 4;
+        return (int)((thick + pt + pb) * scale_);
+    };
 
     // Resolve + load per-item icons (Rainmeter vars → absolute path). A menu
     // with any loadable icon reserves a square gutter on the left of every row.
@@ -287,11 +303,15 @@ void PopupWindow::Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu,
         itemImages_.emplace_back(LoadIconBitmap(abs ? abs : (v ? v : L""), 256));
     }
 
-    hwnd_ = CreateWindowExW(
-        WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
-        kClass, L"", WS_POPUP, 0, 0, 0, 0,
-        owner_, nullptr, GetModuleHandleW(nullptr), nullptr);
-    if (!hwnd_) return;
+    // Reuse the window on reposition (right-click again) so we never destroy the
+    // capture-holding window mid-pump — that would fire WM_CAPTURECHANGED and end.
+    if (!hwnd_) {
+        hwnd_ = CreateWindowExW(
+            WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+            kClass, L"", WS_POPUP, 0, 0, 0, 0,
+            owner_, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (!hwnd_) return;
+    }
 
     // Measure text to size the body.
     Bitmap probe(1, 1, PixelFormat32bppPARGB);
@@ -303,7 +323,7 @@ void PopupWindow::Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu,
     int textMax = 0;
     bodyH_ = 0;
     for (const auto& it : model.items) {
-        if (it.separator) { bodyH_ += sepH; continue; }
+        if (it.separator) { bodyH_ += sepRowH(it.box); continue; }
         RectF box;
         gm.MeasureString(it.text.c_str(), -1, &font, PointF(0, 0), &box);
         textMax = (std::max)(textMax, (int)(box.Width + 0.5f));
@@ -343,7 +363,7 @@ void PopupWindow::Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu,
     itemRects_.clear();
     int y = margin_;
     for (const auto& it : model.items) {
-        int h = it.separator ? sepH : itemH;
+        int h = it.separator ? sepRowH(it.box) : itemH;
         itemRects_.push_back(RECT{ margin_, y, margin_ + bodyW_, y + h });
         y += h;
     }
@@ -386,6 +406,7 @@ std::wstring PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
     SetCapture(hwnd_);
     done_ = false;
     std::wstring chosen;
+    bool forwardRClick = false; POINT forwardPt{};
     MSG msg;
     while (!done_ && GetMessageW(&msg, nullptr, 0, 0)) {
         switch (msg.message) {
@@ -422,7 +443,23 @@ std::wstring PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
             }
             break;
         }
-        case WM_RBUTTONUP:
+        case WM_RBUTTONUP: {
+            // Right-click again over the owning skin: re-open at the new location.
+            // Right-click anywhere else (desktop, another skin): dismiss.
+            POINT sp{ GET_X_LPARAM(msg.lParam) + winX_, GET_Y_LPARAM(msg.lParam) + winY_ };
+            if (DeepestAt(sp)) break;   // right-click on the menu itself: ignore
+            RECT ow;
+            if (owner_ && GetWindowRect(owner_, &ow) && PtInRect(&ow, sp)) {
+                CloseChild();
+                hovered_ = -1;
+                Open(*model_, sp, false, 0);
+            } else {
+                // Dismiss, then replay the right-click so the window under it
+                // (another skin, Rainmeter, the desktop) gets its own menu.
+                forwardRClick = true; forwardPt = sp; done_ = true;
+            }
+            break;
+        }
         case WM_MBUTTONDOWN:
             done_ = true;
             break;
@@ -444,5 +481,15 @@ std::wstring PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
     // Tear the whole chain down before the caller runs the bang.
     CloseChild();
     if (hwnd_) { DestroyWindow(hwnd_); hwnd_ = nullptr; }
+
+    // Replay the outside right-click now that our window/capture are gone, so it
+    // lands on whatever is under the cursor.
+    if (forwardRClick) {
+        SetCursorPos(forwardPt.x, forwardPt.y);
+        INPUT in[2] = {};
+        in[0].type = INPUT_MOUSE; in[0].mi.dwFlags = MOUSEEVENTF_RIGHTDOWN;
+        in[1].type = INPUT_MOUSE; in[1].mi.dwFlags = MOUSEEVENTF_RIGHTUP;
+        SendInput(2, in, sizeof(INPUT));
+    }
     return chosen;
 }
