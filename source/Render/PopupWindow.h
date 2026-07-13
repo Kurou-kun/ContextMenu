@@ -5,7 +5,7 @@
 #include <memory>
 #include "Menu/MenuModel.h"
 
-namespace Gdiplus { class Bitmap; }
+namespace Gdiplus { class Bitmap; class Graphics; class RectF; }
 
 // A layered GDI+ popup that renders a MenuModel and blocks until dismissed.
 // Handles hover highlight, click-to-invoke (resolves + runs the item bang via
@@ -33,14 +33,19 @@ private:
     std::vector<RECT>    itemRects_;  // client-relative row rects, per item
     int   hovered_ = -1;
 
-    // Fly-out child (one level; the root routes all input via capture).
-    // ponytail: single level — deeper nesting shows a chevron but won't open.
+    // Fly-out child. Each popup owns at most one child, so the open chain is a
+    // linked list of arbitrary depth (root -> child -> child ...). The root's
+    // Show() pump routes every mouse message to the deepest popup under it.
     std::unique_ptr<PopupWindow> child_;
-    int childParent_ = -1;            // root item index that owns child_
+    int childParent_ = -1;            // this popup's item index that owns child_
 
     // Per-item icons (aligned with model_->items; null slots = no/failed icon).
     std::vector<std::unique_ptr<Gdiplus::Bitmap>> icons_;
     bool hasIcons_ = false;
+
+    // Box-style images: whole-menu background + per-item (aligned with items).
+    std::unique_ptr<Gdiplus::Bitmap> bgImage_;
+    std::vector<std::unique_ptr<Gdiplus::Bitmap>> itemImages_;
 
     // Geometry cached for repaint (all pixels, DPI-scaled).
     double scale_ = 1.0;
@@ -52,10 +57,14 @@ private:
     // Create + render the window without pumping (root drives one shared loop).
     void Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu, int parentLeftX);
     void Paint();
+    // Draw one styled box (shadow -> fill -> image -> stroke). corner is device px.
+    void DrawBox(Gdiplus::Graphics& g, Gdiplus::RectF box, const cm::BoxStyle& s,
+                 int cornerPx, Gdiplus::Bitmap* image);
     int  HitTest(POINT clientPt) const;     // item index, or -1 (screen->client)
     int  HitTestScreen(POINT screenPt) const;
     bool ContainsScreen(POINT screenPt) const; // inside this popup's body rect
-    void OpenChildFor(int rootIndex);
+    PopupWindow* DeepestAt(POINT screenPt);     // deepest popup in chain over pt, or null
+    void OpenChildFor(int itemIndex);
     void CloseChild();
 
     static LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);

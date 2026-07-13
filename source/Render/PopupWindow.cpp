@@ -5,6 +5,7 @@
 #include <windowsx.h>
 #include <mutex>
 #include <algorithm>
+#include <cstdlib>
 #include "RainmeterAPI.h"
 
 #pragma comment(lib, "gdiplus.lib")
@@ -73,6 +74,39 @@ static void AddRoundRect(GraphicsPath& path, RectF r, REAL rad) {
     path.CloseFigure();
 }
 
+// Fill/image/stroke/shadow for one styled box, scaled. corner is device px.
+void PopupWindow::DrawBox(Graphics& g, RectF box, const cm::BoxStyle& s, int corner, Bitmap* image) {
+    // Shadow: single offset rounded rect (ponytail: not a real gaussian blur).
+    if (s.shadowSize > 0 && s.shadow.a > 0) {
+        RectF sh = box;
+        sh.Offset((REAL)(s.shadowOffX * scale_), (REAL)(s.shadowOffY * scale_));
+        GraphicsPath sp; AddRoundRect(sp, sh, (REAL)corner);
+        SolidBrush shb(G(s.shadow)); g.FillPath(&shb, &sp);
+    }
+    GraphicsPath path; AddRoundRect(path, box, (REAL)corner);
+    if (s.hasGradient && s.gradStops.size() >= 2) {
+        LinearGradientBrush br(box, G(s.gradStops.front()), G(s.gradStops.back()), (REAL)s.gradAngle);
+        int n = (int)s.gradStops.size();
+        std::vector<Gdiplus::Color> cols(n); std::vector<REAL> pos(n);
+        for (int i = 0; i < n; ++i) { cols[i] = G(s.gradStops[i]); pos[i] = (REAL)i / (n - 1); }
+        br.SetInterpolationColors(cols.data(), pos.data(), n);
+        g.FillPath(&br, &path);
+    } else if (s.hasColor) {
+        SolidBrush br(G(s.color)); g.FillPath(&br, &path);
+    }
+    if (image) {
+        g.SetClip(&path);
+        g.DrawImage(image, box);
+        g.ResetClip();
+    }
+    if (s.strokeW > 0 && s.stroke.a > 0) {
+        REAL sw = (REAL)(s.strokeW * scale_);
+        RectF ir = box; ir.Inflate(-sw / 2, -sw / 2);
+        GraphicsPath ip; AddRoundRect(ip, ir, (std::max)(0.0f, (REAL)corner - sw / 2));
+        Pen pen(G(s.stroke), sw); g.DrawPath(&pen, &ip);
+    }
+}
+
 LRESULT CALLBACK PopupWindow::WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return DefWindowProcW(h, m, w, l);
 }
@@ -136,24 +170,7 @@ void PopupWindow::Paint() {
 
         RectF bodyRect((REAL)margin, (REAL)margin, (REAL)bodyW_, (REAL)bodyH_);
 
-        // Soft shadow: single offset, semi-transparent rounded rect. v1 good-enough.
-        {
-            RectF sh = bodyRect;
-            sh.Offset(0, (REAL)(2 * scale_));
-            GraphicsPath sp;
-            AddRoundRect(sp, sh, (REAL)radius);
-            SolidBrush shb(G(th.shadow));
-            g.FillPath(&shb, &sp);
-        }
-
-        GraphicsPath body;
-        AddRoundRect(body, bodyRect, (REAL)radius);
-        SolidBrush bgb(G(th.bg));
-        g.FillPath(&bgb, &body);
-        if (th.borderWidth > 0) {
-            Pen border(G(th.border), (REAL)(th.borderWidth * scale_));
-            g.DrawPath(&border, &body);
-        }
+        DrawBox(g, bodyRect, th.background, radius, bgImage_.get());
 
         StringFormat sf;
         sf.SetAlignment(StringAlignmentNear);
@@ -174,12 +191,13 @@ void PopupWindow::Paint() {
                                     (REAL)(margin + bodyW_ - pad), cy);
                 continue;
             }
+            RectF hr((REAL)r.left, (REAL)r.top,
+                     (REAL)(r.right - r.left), (REAL)(r.bottom - r.top));
+            int itCorner = it.box.cornerSet ? (int)(it.box.cornerRadius * scale_) : radius_ / 2;
+            DrawBox(g, hr, it.box, itCorner, itemImages_[i].get());
             bool hot = ((int)i == hovered_);
             if (hot) {
-                GraphicsPath hp;
-                RectF hr((REAL)r.left, (REAL)r.top,
-                         (REAL)(r.right - r.left), (REAL)(r.bottom - r.top));
-                AddRoundRect(hp, hr, (REAL)(radius / 2));
+                GraphicsPath hp; AddRoundRect(hp, hr, (REAL)itCorner);
                 g.FillPath(&hoverBg, &hp);
             }
             if (hasIcons_ && icons_[i]) {
@@ -227,9 +245,10 @@ void PopupWindow::Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu,
     GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &dpiX, &dpiY);
     scale_ = dpiX / 96.0;
 
-    pad_    = (int)(th.padding * scale_);
-    margin_ = (int)(th.shadowBlur * scale_);
-    radius_ = (int)(th.cornerRadius * scale_);
+    const cm::BoxStyle& bg = th.background;
+    pad_    = (int)(8 * scale_);   // fixed text gutter; background padding added below
+    margin_ = (int)((bg.shadowSize + (std::max)(std::abs(bg.shadowOffX), std::abs(bg.shadowOffY))) * scale_);
+    radius_ = (int)(bg.cornerRadius * scale_);
     emPx_   = (REAL)(th.fontSize * scale_ * 96.0 / 72.0);
     const int itemH = (int)(th.itemHeight * scale_);
     const int sepH  = (int)(9 * scale_);
@@ -252,6 +271,21 @@ void PopupWindow::Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu,
     }
     iconSlot_ = hasIcons_ ? itemH : 0;
     chevronReserve_ = hasSub ? (int)(14 * scale_) : 0;
+
+    // Box-style images: background + per-item (loaded full-res via LoadIconBitmap).
+    bgImage_.reset();
+    if (!bg.image.empty()) {
+        LPCWSTR v = RmReplaceVariables(rm_, bg.image.c_str());
+        LPCWSTR abs = RmPathToAbsolute(rm_, v);
+        bgImage_.reset(LoadIconBitmap(abs ? abs : (v ? v : L""), 256));
+    }
+    itemImages_.clear();
+    for (const auto& it : model.items) {
+        if (it.box.image.empty()) { itemImages_.emplace_back(); continue; }
+        LPCWSTR v = RmReplaceVariables(rm_, it.box.image.c_str());
+        LPCWSTR abs = RmPathToAbsolute(rm_, v);
+        itemImages_.emplace_back(LoadIconBitmap(abs ? abs : (v ? v : L""), 256));
+    }
 
     hwnd_ = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
@@ -276,7 +310,8 @@ void PopupWindow::Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu,
         bodyH_ += itemH;
     }
     const int leftGutter = hasIcons_ ? iconSlot_ : pad_;
-    bodyW_ = leftGutter + textMax + chevronReserve_ + pad_;
+    const int bgPadX = (int)((bg.padL + bg.padR) * scale_);
+    bodyW_ = leftGutter + textMax + chevronReserve_ + pad_ + bgPadX;
     int maxW = (int)(th.maxWidth * scale_);
     if (bodyW_ > maxW) bodyW_ = maxW;
     if (bodyW_ < 2 * pad_) bodyW_ = 2 * pad_;
@@ -317,6 +352,13 @@ void PopupWindow::Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu,
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 }
 
+PopupWindow* PopupWindow::DeepestAt(POINT sp) {
+    PopupWindow* hit = nullptr;
+    for (PopupWindow* p = this; p; p = p->child_.get())
+        if (p->ContainsScreen(sp)) hit = p;   // last match = deepest (chain has no overlap)
+    return hit;
+}
+
 void PopupWindow::OpenChildFor(int ri) {
     CloseChild();
     const cm::MenuItem& it = model_->items[ri];
@@ -349,41 +391,33 @@ std::wstring PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
         switch (msg.message) {
         case WM_MOUSEMOVE: {
             POINT sp{ GET_X_LPARAM(msg.lParam) + winX_, GET_Y_LPARAM(msg.lParam) + winY_ };
-            if (child_ && child_->ContainsScreen(sp)) {
-                int ci = child_->HitTestScreen(sp);
-                if (ci != child_->hovered_) { child_->hovered_ = ci; child_->Paint(); }
-                if (hovered_ != childParent_) { hovered_ = childParent_; Paint(); }
-            } else {
-                int ri = HitTestScreen(sp);
-                if (ri != hovered_) { hovered_ = ri; Paint(); }
+            PopupWindow* p = DeepestAt(sp);
+            if (p) {
+                int ri = p->HitTestScreen(sp);
+                if (ri != p->hovered_) { p->hovered_ = ri; p->Paint(); }
                 if (ri >= 0) {
-                    if (!model_->items[ri].submenu.empty()) {
-                        if (ri != childParent_) OpenChildFor(ri);
+                    if (!p->model_->items[ri].submenu.empty()) {
+                        if (ri != p->childParent_) p->OpenChildFor(ri);
                     } else {
-                        CloseChild();
+                        p->CloseChild();    // deeper chain collapses under a leaf row
                     }
                 }
-                // ri < 0 (gap/padding): keep child so diagonal travel works.
+                // ri < 0 (separator/gap inside p): keep child so diagonal travel works.
             }
+            // p == null (in the gutter between popups): keep the whole chain open.
             break;
         }
         case WM_LBUTTONUP: {
             POINT sp{ GET_X_LPARAM(msg.lParam) + winX_, GET_Y_LPARAM(msg.lParam) + winY_ };
-            if (child_ && child_->ContainsScreen(sp)) {
-                int ci = child_->HitTestScreen(sp);
-                if (ci >= 0 && child_->model_->items[ci].submenu.empty()) {
-                    chosen = child_->model_->items[ci].bang; done_ = true;
-                }
-            } else {
-                int ri = HitTestScreen(sp);
-                if (ri >= 0) {
-                    if (model_->items[ri].submenu.empty()) {
-                        chosen = model_->items[ri].bang; done_ = true;
-                    } else {
-                        OpenChildFor(ri);   // click a parent: just ensure open
-                    }
+            PopupWindow* p = DeepestAt(sp);
+            if (!p) { done_ = true; break; }   // click-away past every popup
+            int ri = p->HitTestScreen(sp);
+            if (ri >= 0) {
+                if (p->model_->items[ri].submenu.empty()) {
+                    chosen = p->model_->items[ri].bang; done_ = true;
                 } else {
-                    done_ = true;           // click-away
+                    p->hovered_ = ri;
+                    p->OpenChildFor(ri);       // click a parent: just ensure open
                 }
             }
             break;
