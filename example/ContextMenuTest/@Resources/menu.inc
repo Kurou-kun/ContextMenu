@@ -1,24 +1,26 @@
 ; Menu definition for the ContextMenu plugin.
 ;
-; [Menu] is the theme section (all keys optional; defaults shown are a dark
-; theme). Every other top-level section is a menu item, rendered in file order.
-; A section named X\Y is a child of the item whose Submenu=X names the group.
+; [Menu] is the background box + global text theme. Every other top-level
+; section is a menu item; a section X\Y is a child of the item whose Submenu=X
+; names the group. Box-style keys (Color, Fill, Image, Stroke, CornerRadius,
+; Shadow, ShadowOffset, Padding) work in [Menu] and in any item section.
 
 [Menu]
-BgColor=30,30,30,255
-TextColor=230,230,230,255
-HoverBgColor=60,60,90,255
-SeparatorColor=80,80,80,255
+Fill=LinearGradient 90 ; 34,34,40,255 ; 20,20,26,255
+Stroke=1,80,80,90,255
+CornerRadius=8
+Shadow=10,0,0,0,110
+ShadowOffset=0,3
+Padding=4
 FontFace=Segoe UI
 FontSize=10
+TextColor=230,230,230,255
+HoverBgColor=70,70,110,255
 ItemHeight=28
-CornerRadius=8
 
 [Refresh]
 Text=Refresh skin
 Bang=!Refresh
-; Icon accepts .png / .ico / .bmp; #@# is the skin's @Resources folder:
-; Icon=#@#refresh.png
 
 [Edit]
 Text=Edit skin
@@ -26,10 +28,16 @@ Bang=!EditSkin
 
 [Sep1]
 Separator=1
+Height=3
+Color=120,110,150,255
+CornerRadius=2
+Padding=16,4,16,4
 
-[Disabled]
-Text=Unavailable
-Disabled=1
+[Accent]
+Text=Accent item
+Bang=!About
+Color=60,60,90,255
+CornerRadius=6
 
 [Tools]
 Text=Tools
@@ -37,6 +45,12 @@ Submenu=Tools
 [Tools\About]
 Text=About Rainmeter
 Bang=!About
-[Tools\Manage]
-Text=Manage
-Bang=!Manage
+[Tools\More]
+Text=More
+Submenu=Tools\More
+[Tools\More\Deeper]
+Text=Deeper
+Submenu=Tools\More\Deeper
+[Tools\More\Deeper\Log]
+Text=Level 4 - Show log
+Bang=!About

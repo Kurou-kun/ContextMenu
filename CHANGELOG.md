@@ -5,6 +5,15 @@ All notable changes to this project are documented here.
 ## [Unreleased]
 
 ### Added
+- Shared **BoxStyle** for the menu background and every item/separator:
+  gradient/image fills, stroke, corner radius, shadow (+offset), and padding —
+  the same `Color`/`Fill`/`Image`/`Stroke`/`CornerRadius`/`Shadow`/
+  `ShadowOffset`/`Padding` keys work in `[Menu]` and in any item section.
+- Styleable separators via the box keys plus `Height` for bar thickness
+  (defaults reproduce the old thin line).
+- Sub-menus now nest to unlimited depth.
+- Right-clicking the skin again repositions the open menu; right-clicking
+  another skin or the desktop dismisses and replays the click to that target.
 - Auto-subclass the skin window and take over its right-click, suppressing
   Rainmeter's default menu.
 - Menu-file (Rainmeter INI) driven menu: `[Menu]` theme section plus one section
