@@ -36,74 +36,93 @@ See [`example/ContextMenuTest`](example/ContextMenuTest) for a complete skin.
 ### Menu file
 
 A menu file is a Rainmeter INI. The `[Menu]` section styles the background box
-and holds the text theme; every other top-level section is an item, shown in
-file order.
+and holds the global text/layout defaults; every other top-level section is an
+item, shown in file order. A section named `[Title]` is a non-interactive
+header; a section whose name starts with `Separator` is a separator bar.
 
 ```ini
 [Menu]
-Fill=LinearGradient 90 ; 34,34,40,255 ; 20,20,26,255
-Stroke=1,80,80,90,255
+Gradient=Linear 90 ; 34,34,40,255 ; 20,20,26,255
+StrokeWidth=1
+StrokeColor=80,80,90,255
 CornerRadius=8
-Shadow=10,0,0,0,110
+Shadow=10 ; 0,0,0,110
 ShadowOffset=0,3
 Padding=4
 FontFace=Segoe UI
 FontSize=10
-HoverBgColor=70,70,110,255
+FontColor=230,230,230,255
+BgHoverColor=70,70,110,255
 ItemHeight=28
+MaxWidth=220
+
+[Title]
+FontAlign=center        ; Text omitted => shows #CURRENTCONFIG#
 
 [Refresh]
 Text=Refresh skin
-Bang=!Refresh
-Icon=#@#refresh.png     ; optional left glyph, .png/.ico/.bmp
+Action=!Refresh
+Icon=%system%\imageres.dll,228   ; %system% + DLL,index, or a .png/.ico/.bmp path
 
 [Accent]
 Text=Accent item
-Bang=!About
-Color=60,60,90,255      ; per-item box fill
+Action=!About
+BgColor=60,60,90,255    ; per-item box fill
+FontCase=Upper
 CornerRadius=6
 
-[Sep1]
-Separator=1
-Height=3                ; styleable separator bar
-Color=190,150,255,255
+[Separator_1]
+Color=190,150,255,255   ; bar color
+Height=3                ; bar thickness
 
 [Tools]
 Text=Tools
 Submenu=Tools           ; opens a fly-out built from [Tools\*]
 [Tools\Log]
 Text=Show log
-Bang=!About
+Action=!About
 ```
 
-**Item content keys:** `Text`, `Bang` (any Rainmeter bang, variables resolved on
-click), `Icon` (small left glyph), `Separator=1`, `Disabled=1`,
-`Submenu=<group>`. A child of group `X` is a section named `X\<name>`; a child
-may itself declare `Submenu=X\<name>` — sub-menus nest to any depth.
+**Item keys:** `Text` (one outer `"…"` pair is stripped), `Action` (any Rainmeter
+bang, variables resolved on click), `Icon`, `IconPos=Left|Right`, `Height`
+(overrides `ItemHeight`), `Disabled=0|1`, `Submenu=<group>`, `SubmenuIco=0|1`
+(right chevron, default on). A child of group `X` is a section named `X\<name>`;
+a child may itself declare `Submenu=X\<name>` — sub-menus nest to any depth.
 
-**Box-style keys** — valid in `[Menu]` (the background box) *and* in any item or
-separator section:
+**Box + text keys** — valid in `[Menu]` (defaults) *and* per item/title:
 
 | Key | Meaning |
 |-----|---------|
-| `Color=r,g,b[,a]` | solid fill (alpha < 255 = translucent) |
-| `Fill=LinearGradient <angle> ; c1 ; c2 [; …]` | linear gradient fill, evenly-spaced stops; overrides `Color` |
-| `Image=<path>` | image drawn over the fill, clipped to the rounded rect |
-| `Stroke=<w>,r,g,b[,a]` | border |
+| `BgColor=r,g,b[,a]` | solid fill |
+| `BgHoverColor=r,g,b[,a]` | hover fill |
+| `Gradient=Linear <angle> ; c1 ; c2 [; …]` | gradient fill; overrides `BgColor` |
+| `GradientHover=Linear <angle> ; c1 ; c2 [; …]` | hover gradient; overrides `BgHoverColor` |
+| `BgImage=<path>` | image drawn over the fill |
+| `FontColor` / `FontHoverColor` | text color, and on hover |
+| `FontSize`, `FontFace`, `FontAlign=Left\|Center\|Right` | text |
+| `FontCase=Upper\|Lower\|Proper\|None` | text case transform (item/title) |
+| `StrokeWidth`, `StrokeColor` | border |
 | `CornerRadius=<px>` | corner rounding |
-| `Shadow=<size>,r,g,b[,a]` | soft drop shadow |
-| `ShadowOffset=<x>,<y>` | shadow direction |
+| `Shadow=<size> ; r,g,b[,a]`, `ShadowOffset=<x>,<y>` | drop shadow |
 | `Padding=<all>` \| `<x>,<y>` \| `<l>,<t>,<r>,<b>` | inner padding |
-| `Height=<px>` | separator bar thickness (separators only) |
 
-**Text-theme keys (`[Menu]` only):** `FontFace`, `FontSize`, `TextColor`,
-`HoverBgColor`, `HoverTextColor`, `DisabledTextColor`, `SeparatorColor`,
-`ItemHeight`, `MaxWidth`. Colors are `R,G,B` or `R,G,B,A` (0–255). Unset keys
-keep their dark-theme defaults.
+**`[Menu]`-only:** `ItemHeight`, `MaxWidth`, `Width=auto|<px>` (fixed width,
+clamped to `MaxWidth`).
+
+**`[Separator_X]`:** `Color` (bar), `Height` (bar thickness), `ItemHeight` (row
+height), plus box keys for the row behind the bar.
+
+**`[Title]`:** a single header row. `Text` defaults to the skin config path
+(`#CURRENTCONFIG#`) when omitted; supports the item icon/height and box/text
+keys but is never hoverable or clickable.
+
+Disabled rows render `FontColor` at alpha 200. Colors are `R,G,B` or `R,G,B,A`
+(0–255). Unset keys keep their dark-theme defaults.
 
 **Right-click behaviour:** right-clicking the skin again repositions the open
 menu; right-clicking another skin or the desktop dismisses it and passes the
-click through to that target; left-click-away or `Esc` dismisses.
+click through to that target; left-click-away or `Esc` dismisses. If the measure
+has no `Menu=`, the skin keeps Rainmeter's native right-click menu.
 
 ## Layout
 
