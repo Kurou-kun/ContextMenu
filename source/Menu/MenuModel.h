@@ -7,13 +7,16 @@ namespace cm {
 
 struct Color { uint8_t r = 0, g = 0, b = 0, a = 255; };
 
-// Shared style for the menu background box and each item box.
+// Shared style for the menu background box, item boxes, and separator rows.
 struct BoxStyle {
-    bool  hasColor = false;    Color color;                 // solid fill
-    bool  hasGradient = false; double gradAngle = 0;        // linear gradient
+    bool  hasColor = false;    Color color;                 // BgColor
+    bool  hasGradient = false; double gradAngle = 0;        // Gradient
     std::vector<Color> gradStops;                           // >=2 to apply
-    std::wstring image;                                     // over the fill; empty = none
-    int   strokeW = 0;         Color stroke{80, 80, 80, 255};
+    bool  hasHoverColor = false;    Color hoverColor;       // BgHoverColor
+    bool  hasHoverGradient = false; double hoverGradAngle = 0; // GradientHover
+    std::vector<Color> hoverGradStops;
+    std::wstring image;                                     // BgImage; empty = none
+    int   strokeW = 0;         Color stroke{80, 80, 80, 255}; // StrokeWidth/StrokeColor
     bool  cornerSet = false;   int cornerRadius = 0;
     int   shadowSize = 0;      Color shadow{0, 0, 0, 120};  int shadowOffX = 0, shadowOffY = 0;
     bool  padSet = false;      int padL = 0, padT = 0, padR = 0, padB = 0;
@@ -21,25 +24,38 @@ struct BoxStyle {
 };
 
 struct Theme {
-    Color text{230, 230, 230, 255};
-    Color hoverBg{60, 60, 90, 255};
-    Color hoverText{230, 230, 230, 255};
-    Color disabledText{120, 120, 120, 255};
-    Color separator{80, 80, 80, 255};
+    Color text{230, 230, 230, 255};        // FontColor default
+    Color hoverText{230, 230, 230, 255};   // FontHoverColor default
     std::wstring fontFace = L"Segoe UI";
-    int fontSize = 10;
-    int itemHeight = 28;
-    int maxWidth = 320;
-    BoxStyle background;   // defaults resolved in ParseMenu
+    int  fontSize = 10;
+    int  fontAlign = 0;                    // 0=left 1=center 2=right
+    int  itemHeight = 28;
+    int  maxWidth = 320;
+    bool widthFixed = false; int fixedWidth = 0;   // Width=<px>
+    Color separatorFallback{80, 80, 80, 255};      // bar color when a separator sets none
+    BoxStyle background;   // includes BgHoverColor/GradientHover defaults; resolved in ParseMenu
 };
 
 struct MenuItem {
     std::wstring text;
-    std::wstring bang;
+    std::wstring bang;               // Action
     std::wstring icon;
     bool separator = false;
-    bool disabled = false;
-    BoxStyle box;                    // per-item style (defaults resolved by renderer)
+    bool title     = false;          // [Title] non-interactive header row
+    bool disabled  = false;
+    bool iconRight = false;          // IconPos=Right
+    bool showChevron = true;         // SubmenuIco (default on)
+    bool rowHeightSet = false; int rowHeight = 0;   // item Height / separator ItemHeight
+
+    // Text overrides; *Set false => fall back to Theme.
+    bool fontColorSet = false;      Color fontColor;
+    bool fontHoverColorSet = false; Color fontHoverColor;
+    bool fontSizeSet = false; int fontSize = 0;
+    bool fontFaceSet = false; std::wstring fontFace;
+    int  fontAlign = -1;            // -1 unset, else 0/1/2
+    int  fontCase = 0;             // FontCase: 0=none 1=upper 2=lower 3=proper
+
+    BoxStyle box;                    // per-row box (incl. hover fill, and bar thickness for separators)
     std::vector<MenuItem> submenu;   // non-empty => fly-out
 };
 

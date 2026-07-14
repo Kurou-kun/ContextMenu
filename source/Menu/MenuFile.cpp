@@ -63,39 +63,76 @@ static int ParseInts(const std::wstring& v, int* out, int max) {
     return n;
 }
 
-// The color substring after the first comma of "n,r,g,b[,a]".
-static bool ColorAfterFirst(const std::wstring& v, Color& c) {
-    size_t comma = v.find(L',');
-    return comma != std::wstring::npos && ParseColor(Trim(v.substr(comma + 1)), c);
+// Strip exactly one outer pair of double quotes: "hi" -> hi, ""hi"" -> "hi".
+static std::wstring StripQuotes(const std::wstring& v) {
+    if (v.size() >= 2 && v.front() == L'"' && v.back() == L'"')
+        return v.substr(1, v.size() - 2);
+    return v;
+}
+
+// 0=left 1=center 2=right; def when unrecognized.
+static int ParseAlign(const std::wstring& v, int def) {
+    std::wstring s = Lower(Trim(v));
+    if (s == L"left") return 0;
+    if (s == L"center" || s == L"centre") return 1;
+    if (s == L"right") return 2;
+    return def;
+}
+
+// FontCase: 0=none 1=upper 2=lower 3=proper.
+static int ParseCase(const std::wstring& v) {
+    std::wstring s = Lower(Trim(v));
+    if (s == L"upper")  return 1;
+    if (s == L"lower")  return 2;
+    if (s == L"proper") return 3;
+    return 0;
+}
+
+// Parse "Linear <angle> ; r,g,b,a ; r,g,b,a [; ...]" into angle+stops.
+static bool ParseGradient(const std::wstring& val, double& angle, std::vector<Color>& stops) {
+    Color c; double a = 0; int seg = 0; size_t i = 0;
+    while (i <= val.size()) {
+        size_t semi = val.find(L';', i);
+        std::wstring tok = Trim(val.substr(i, semi == std::wstring::npos ? std::wstring::npos : semi - i));
+        if (seg == 0) {
+            size_t sp = tok.find_last_of(L" \t");
+            if (sp != std::wstring::npos) a = wcstod(Trim(tok.substr(sp + 1)).c_str(), nullptr);
+        } else if (ParseColor(tok, c)) {
+            stops.push_back(c);
+        }
+        ++seg;
+        if (semi == std::wstring::npos) break;
+        i = semi + 1;
+    }
+    angle = a;
+    return stops.size() >= 2;
 }
 
 static void ApplyBoxKey(BoxStyle& s, const std::wstring& key, const std::wstring& val) {
     std::wstring k = Lower(key); Color c;
-    if (k == L"color") { if (ParseColor(val, c)) { s.color = c; s.hasColor = true; } }
-    else if (k == L"fill") {
-        // "LinearGradient <angle> ; r,g,b,a ; r,g,b,a [; ...]"
-        std::vector<Color> stops; double angle = 0; int seg = 0;
-        size_t i = 0;
-        while (i <= val.size()) {
-            size_t semi = val.find(L';', i);
-            std::wstring tok = Trim(val.substr(i, semi == std::wstring::npos ? std::wstring::npos : semi - i));
-            if (seg == 0) {
-                size_t sp = tok.find_last_of(L" \t");
-                if (sp != std::wstring::npos) angle = wcstod(Trim(tok.substr(sp + 1)).c_str(), nullptr);
-            } else if (ParseColor(tok, c)) {
-                stops.push_back(c);
-            }
-            ++seg;
-            if (semi == std::wstring::npos) break;
-            i = semi + 1;
-        }
-        if (stops.size() >= 2) { s.hasGradient = true; s.gradAngle = angle; s.gradStops = std::move(stops); }
+    if (k == L"bgcolor") { if (ParseColor(val, c)) { s.color = c; s.hasColor = true; } }
+    else if (k == L"bghovercolor") { if (ParseColor(val, c)) { s.hoverColor = c; s.hasHoverColor = true; } }
+    else if (k == L"gradient") {
+        std::vector<Color> stops; double angle = 0;
+        if (ParseGradient(val, angle, stops)) { s.hasGradient = true; s.gradAngle = angle; s.gradStops = std::move(stops); }
     }
-    else if (k == L"image")       s.image = val;
+    else if (k == L"gradienthover") {
+        std::vector<Color> stops; double angle = 0;
+        if (ParseGradient(val, angle, stops)) { s.hasHoverGradient = true; s.hoverGradAngle = angle; s.hoverGradStops = std::move(stops); }
+    }
+    else if (k == L"bgimage")     s.image = val;
     else if (k == L"height")      { s.height = ParseInt(val, 0); s.heightSet = true; }
-    else if (k == L"stroke")      { int w; if (ParseInts(val, &w, 1) == 1 && ColorAfterFirst(val, c)) { s.strokeW = w; s.stroke = c; } }
+    else if (k == L"strokewidth") s.strokeW = ParseInt(val, 0);
+    else if (k == L"strokecolor") { if (ParseColor(val, c)) s.stroke = c; }
     else if (k == L"cornerradius"){ s.cornerRadius = ParseInt(val, 0); s.cornerSet = true; }
-    else if (k == L"shadow")      { int sz; if (ParseInts(val, &sz, 1) == 1 && ColorAfterFirst(val, c)) { s.shadowSize = sz; s.shadow = c; } }
+    else if (k == L"shadow")      {
+        // "size ; r,g,b,a"
+        size_t semi = val.find(L';');
+        if (semi != std::wstring::npos) {
+            s.shadowSize = ParseInt(Trim(val.substr(0, semi)), 0);
+            if (ParseColor(Trim(val.substr(semi + 1)), c)) s.shadow = c;
+        }
+    }
     else if (k == L"shadowoffset"){ int xy[2]; if (ParseInts(val, xy, 2) == 2) { s.shadowOffX = xy[0]; s.shadowOffY = xy[1]; } }
     else if (k == L"padding")     {
         int p[4]; int n = ParseInts(val, p, 4);
@@ -119,15 +156,18 @@ static void ApplyBackgroundDefaults(BoxStyle& s) {
 
 static void ApplyThemeKey(Theme& t, const std::wstring& key, const std::wstring& val) {
     std::wstring k = Lower(key); Color c;
-    if      (k == L"textcolor")         { if (ParseColor(val, c)) t.text = c; }
-    else if (k == L"hoverbgcolor")      { if (ParseColor(val, c)) t.hoverBg = c; }
-    else if (k == L"hovertextcolor")    { if (ParseColor(val, c)) t.hoverText = c; }
-    else if (k == L"disabledtextcolor") { if (ParseColor(val, c)) t.disabledText = c; }
-    else if (k == L"separatorcolor")    { if (ParseColor(val, c)) t.separator = c; }
-    else if (k == L"fontface")          t.fontFace = val;
-    else if (k == L"fontsize")          t.fontSize = ParseInt(val, t.fontSize);
-    else if (k == L"itemheight")        t.itemHeight = ParseInt(val, t.itemHeight);
-    else if (k == L"maxwidth")          t.maxWidth = ParseInt(val, t.maxWidth);
+    if      (k == L"fontcolor")       { if (ParseColor(val, c)) t.text = c; }
+    else if (k == L"fonthovercolor")  { if (ParseColor(val, c)) t.hoverText = c; }
+    else if (k == L"fontface")        t.fontFace = val;
+    else if (k == L"fontsize")        t.fontSize = ParseInt(val, t.fontSize);
+    else if (k == L"fontalign")       t.fontAlign = ParseAlign(val, t.fontAlign);
+    else if (k == L"itemheight")      t.itemHeight = ParseInt(val, t.itemHeight);
+    else if (k == L"maxwidth")        t.maxWidth = ParseInt(val, t.maxWidth);
+    else if (k == L"width")           {
+        std::wstring s = Lower(Trim(val));
+        if (s == L"auto") t.widthFixed = false;
+        else { t.fixedWidth = ParseInt(val, 0); t.widthFixed = t.fixedWidth > 0; }
+    }
 }
 
 static bool Truthy(const std::wstring& v) {
@@ -136,16 +176,62 @@ static bool Truthy(const std::wstring& v) {
 }
 
 static MenuItem BuildItem(const KeyVals& kv) {
-    MenuItem it;
+    MenuItem it; Color c;
     for (auto& p : kv) {
         std::wstring k = Lower(p.first);
-        if      (k == L"text")      it.text = p.second;
-        else if (k == L"bang")      it.bang = p.second;
-        else if (k == L"icon")      it.icon = p.second;
-        else if (k == L"separator") it.separator = Truthy(p.second);
-        else if (k == L"disabled")  it.disabled = Truthy(p.second);
+        if      (k == L"text")           it.text = StripQuotes(p.second);
+        else if (k == L"action")         it.bang = p.second;
+        else if (k == L"icon")           it.icon = p.second;
+        else if (k == L"iconpos")        it.iconRight = (Lower(Trim(p.second)) == L"right");
+        else if (k == L"disabled")       it.disabled = Truthy(p.second);
+        else if (k == L"submenuico")     it.showChevron = Truthy(p.second);
+        else if (k == L"height")         { it.rowHeight = ParseInt(p.second, 0); it.rowHeightSet = true; }
+        else if (k == L"fontcolor")      { if (ParseColor(p.second, c)) { it.fontColor = c; it.fontColorSet = true; } }
+        else if (k == L"fonthovercolor"){ if (ParseColor(p.second, c)) { it.fontHoverColor = c; it.fontHoverColorSet = true; } }
+        else if (k == L"fontsize")       { it.fontSize = ParseInt(p.second, 0); it.fontSizeSet = true; }
+        else if (k == L"fontface")       { it.fontFace = p.second; it.fontFaceSet = true; }
+        else if (k == L"fontalign")      it.fontAlign = ParseAlign(p.second, -1);
+        else if (k == L"fontcase")       it.fontCase = ParseCase(p.second);
     }
     it.box = ParseBoxStyle(kv);
+    return it;
+}
+
+// A section is a separator when its name's last '\'-segment starts with
+// "separator" or "seperator" (case-insensitive).
+static bool IsSeparatorName(const std::wstring& section) {
+    size_t bs = section.find_last_of(L'\\');
+    std::wstring leaf = Lower(bs == std::wstring::npos ? section : section.substr(bs + 1));
+    return leaf.compare(0, 9, L"separator") == 0 || leaf.compare(0, 9, L"seperator") == 0;
+}
+
+// Separator row: box keys via ParseBoxStyle map the row background; Height=bar
+// thickness; Color=bar color (stored in the text-less row's free fontColor);
+// ItemHeight=row height override.
+static MenuItem BuildSeparator(const KeyVals& kv) {
+    MenuItem it; it.separator = true;
+    it.box = ParseBoxStyle(kv);   // Height => box.height = bar thickness
+    Color c;
+    for (auto& p : kv) {
+        std::wstring k = Lower(p.first);
+        if      (k == L"color")      { if (ParseColor(p.second, c)) { it.fontColor = c; it.fontColorSet = true; } }
+        else if (k == L"itemheight") { it.rowHeight = ParseInt(p.second, 0); it.rowHeightSet = true; }
+    }
+    return it;
+}
+
+// The single Title section: last name-segment equals "title" (case-insensitive).
+static bool IsTitleName(const std::wstring& section) {
+    size_t bs = section.find_last_of(L'\\');
+    return Lower(bs == std::wstring::npos ? section : section.substr(bs + 1)) == L"title";
+}
+
+// Title row: reuse BuildItem for box/font/icon/height/text, then mark it a
+// non-interactive header (drop any interactive fields a stray key set).
+static MenuItem BuildTitle(const KeyVals& kv) {
+    MenuItem it = BuildItem(kv);
+    it.title = true;
+    it.disabled = false; it.bang.clear(); it.showChevron = false;
     return it;
 }
 
@@ -163,9 +249,11 @@ static std::vector<MenuItem> BuildGroup(const Sections& sections, const std::wst
         if (s.first.size() <= want.size()) continue;
         if (s.first.compare(0, want.size(), want) != 0) continue;
         if (s.first.find(L'\\', want.size()) != std::wstring::npos) continue; // deeper, not direct
-        MenuItem it = BuildItem(s.second);
-        if (const std::wstring* sub = FindVal(s.second, L"submenu"))
-            it.submenu = BuildGroup(sections, *sub);
+        MenuItem it = IsSeparatorName(s.first) ? BuildSeparator(s.second) : BuildItem(s.second);
+        if (!it.separator) {
+            if (const std::wstring* sub = FindVal(s.second, L"submenu"))
+                it.submenu = BuildGroup(sections, *sub);
+        }
         out.push_back(std::move(it));
     }
     return out;
@@ -201,11 +289,17 @@ MenuModel ParseMenu(const std::wstring& text) {
     ApplyBackgroundDefaults(m.theme.background);
 
     // Top-level items: sections with no backslash, in file order.
+    bool titleSeen = false;
     for (auto& s : sections) {
         if (s.first.find(L'\\') != std::wstring::npos) continue;
-        MenuItem it = BuildItem(s.second);
-        if (const std::wstring* sub = FindVal(s.second, L"submenu"))
-            it.submenu = BuildGroup(sections, *sub);
+        MenuItem it;
+        if (IsSeparatorName(s.first))                it = BuildSeparator(s.second);
+        else if (!titleSeen && IsTitleName(s.first)) { it = BuildTitle(s.second); titleSeen = true; }
+        else                                         it = BuildItem(s.second);
+        if (!it.separator && !it.title) {
+            if (const std::wstring* sub = FindVal(s.second, L"submenu"))
+                it.submenu = BuildGroup(sections, *sub);
+        }
         m.items.push_back(std::move(it));
     }
     return m;
