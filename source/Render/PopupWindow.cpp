@@ -6,17 +6,51 @@
 #include <mutex>
 #include <algorithm>
 #include <cstdlib>
+#include <cwctype>
 #include "RainmeterAPI.h"
 
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "shcore.lib")
+#pragma comment(lib, "shell32.lib")
 
 using namespace Gdiplus;
 
-// Load an icon file into a GDI+ bitmap. .ico goes via LoadImage (picks the
-// closest embedded size); .png/.bmp/others load directly. Returns null on any
-// failure so a bad path just leaves the row text-only.
+// Expand a leading %system% to the Windows System32 directory.
+static std::wstring ExpandSystem(const std::wstring& p) {
+    size_t at = p.find(L"%system%");
+    if (at == std::wstring::npos) return p;
+    wchar_t sys[MAX_PATH]; UINT n = GetSystemDirectoryW(sys, MAX_PATH);
+    std::wstring out = p; out.replace(at, 8, std::wstring(sys, n));
+    return out;
+}
+
+// Split "file,index" (trailing signed int after the last comma). Returns true and
+// fills base/index when an index suffix is present.
+static bool SplitIconIndex(const std::wstring& in, std::wstring& base, int& index) {
+    size_t comma = in.find_last_of(L',');
+    if (comma == std::wstring::npos) return false;
+    std::wstring idx = in.substr(comma + 1);
+    wchar_t* end = nullptr; long v = wcstol(idx.c_str(), &end, 10);
+    if (end == idx.c_str() || *end != L'\0') return false;   // not a number => real comma path
+    base = in.substr(0, comma); index = (int)v; return true;
+}
+
+// Load an icon file into a GDI+ bitmap. "file,index" extracts a DLL/EXE icon via
+// ExtractIconEx; .ico goes via LoadImage (picks the closest embedded size);
+// .png/.bmp/others load directly. Returns null on any failure so a bad path just
+// leaves the row text-only.
 static Bitmap* LoadIconBitmap(const std::wstring& path, int px) {
+    std::wstring base; int index = 0;
+    if (SplitIconIndex(path, base, index)) {
+        HICON h = nullptr;
+        if (ExtractIconExW(base.c_str(), index, &h, nullptr, 1) >= 1 && h) {
+            Bitmap* bmp = Bitmap::FromHICON(h);
+            DestroyIcon(h);
+            if (bmp && bmp->GetLastStatus() != Ok) { delete bmp; return nullptr; }
+            return bmp;
+        }
+        return nullptr;
+    }
     size_t dot = path.find_last_of(L'.');
     std::wstring ext = dot == std::wstring::npos ? L"" : path.substr(dot + 1);
     std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
@@ -64,6 +98,30 @@ static Gdiplus::Color G(const cm::Color& c) {
     return Gdiplus::Color(c.a, c.r, c.g, c.b);
 }
 
+static int    RFontAlign(const cm::MenuItem& it, const cm::Theme& t) { return it.fontAlign >= 0 ? it.fontAlign : t.fontAlign; }
+static int    RFontSize (const cm::MenuItem& it, const cm::Theme& t) { return it.fontSizeSet ? it.fontSize : t.fontSize; }
+static const std::wstring& RFontFace(const cm::MenuItem& it, const cm::Theme& t) { return it.fontFaceSet ? it.fontFace : t.fontFace; }
+static cm::Color RTextColor(const cm::MenuItem& it, const cm::Theme& t, bool hot) {
+    cm::Color c = hot ? (it.fontHoverColorSet ? it.fontHoverColor : t.hoverText)
+                      : (it.fontColorSet ? it.fontColor : t.text);
+    if (it.disabled) c.a = 200;
+    return c;
+}
+
+// FontCase: 1=upper 2=lower 3=proper (title case); 0/else = verbatim.
+static std::wstring ApplyCase(std::wstring s, int mode) {
+    if (mode == 1) for (auto& ch : s) ch = towupper(ch);
+    else if (mode == 2) for (auto& ch : s) ch = towlower(ch);
+    else if (mode == 3) {
+        bool start = true;
+        for (auto& ch : s) {
+            if (iswspace(ch)) { start = true; }
+            else { ch = start ? towupper(ch) : towlower(ch); start = false; }
+        }
+    }
+    return s;
+}
+
 static void AddRoundRect(GraphicsPath& path, RectF r, REAL rad) {
     if (rad <= 0) { path.AddRectangle(r); return; }
     REAL d = rad * 2;
@@ -107,6 +165,27 @@ void PopupWindow::DrawBox(Graphics& g, RectF box, const cm::BoxStyle& s, int cor
     }
 }
 
+// Fill `path` with a hover style: per-item box hover, else the menu bg hover.
+void PopupWindow::FillHover(Graphics& g, const RectF& box, GraphicsPath& path,
+                            const cm::BoxStyle& item) {
+    const cm::BoxStyle& bg = model_->theme.background;
+    bool ig = item.hasHoverGradient, ic = item.hasHoverColor;
+    const std::vector<cm::Color>& stops = ig ? item.hoverGradStops : bg.hoverGradStops;
+    double angle = ig ? item.hoverGradAngle : bg.hoverGradAngle;
+    if (ig || (!ic && bg.hasHoverGradient)) {
+        if (stops.size() >= 2) {
+            LinearGradientBrush br(box, G(stops.front()), G(stops.back()), (REAL)angle);
+            int n = (int)stops.size(); std::vector<Gdiplus::Color> cols(n); std::vector<REAL> pos(n);
+            for (int i = 0; i < n; ++i) { cols[i] = G(stops[i]); pos[i] = (REAL)i / (n - 1); }
+            br.SetInterpolationColors(cols.data(), pos.data(), n);
+            g.FillPath(&br, &path);
+        }
+    } else {
+        cm::Color c = ic ? item.hoverColor : (bg.hasHoverColor ? bg.hoverColor : cm::Color{60,60,90,255});
+        SolidBrush br(G(c)); g.FillPath(&br, &path);
+    }
+}
+
 LRESULT CALLBACK PopupWindow::WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return DefWindowProcW(h, m, w, l);
 }
@@ -123,7 +202,7 @@ int PopupWindow::HitTest(POINT p) const {
         const RECT& r = itemRects_[i];
         if (p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom) {
             const cm::MenuItem& it = model_->items[i];
-            if (it.separator || it.disabled) return -1;
+            if (it.separator || it.disabled || it.title) return -1;
             return (int)i;
         }
     }
@@ -165,68 +244,85 @@ void PopupWindow::Paint() {
         g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
         g.Clear(Gdiplus::Color(0, 0, 0, 0));
 
-        FontFamily family(th.fontFace.c_str());
-        Font font(&family, emPx_, FontStyleRegular, UnitPixel);
-
         RectF bodyRect((REAL)margin, (REAL)margin, (REAL)bodyW_, (REAL)bodyH_);
-
         DrawBox(g, bodyRect, th.background, radius, bgImage_.get());
-
-        StringFormat sf;
-        sf.SetAlignment(StringAlignmentNear);
-        sf.SetLineAlignment(StringAlignmentCenter);
-        sf.SetFormatFlags(StringFormatFlagsNoWrap);
-        SolidBrush textBrush(G(th.text));
-        SolidBrush hoverText(G(th.hoverText));
-        SolidBrush disBrush(G(th.disabledText));
-        SolidBrush hoverBg(G(th.hoverBg));
 
         for (size_t i = 0; i < model_->items.size(); ++i) {
             const cm::MenuItem& it = model_->items[i];
             const RECT& r = itemRects_[i]; // client coords
+
             if (it.separator) {
                 const cm::BoxStyle& b = it.box;
+                RectF rowRect((REAL)margin, (REAL)r.top, (REAL)bodyW_, (REAL)(r.bottom - r.top));
+                if (b.hasColor || !b.image.empty() || b.hasGradient) {
+                    int rc = b.cornerSet ? (int)(b.cornerRadius * scale_) : 0;
+                    DrawBox(g, rowRect, b, rc, itemImages_[i].get());
+                }
                 REAL thick = (REAL)((b.heightSet ? b.height : 1) * scale_);
                 REAL pl = (REAL)((b.padSet ? b.padL : 8) * scale_);
                 REAL pr = (REAL)((b.padSet ? b.padR : 8) * scale_);
                 REAL cy = (REAL)((r.top + r.bottom) / 2);
-                RectF bar((REAL)margin + pl, cy - thick / 2,
-                          (REAL)bodyW_ - pl - pr, thick);
-                if (b.hasColor || b.hasGradient) {
-                    int rc = b.cornerSet ? (int)(b.cornerRadius * scale_) : 0;
-                    DrawBox(g, bar, b, rc, nullptr);
-                } else {
-                    SolidBrush sb(G(th.separator));
-                    g.FillRectangle(&sb, bar);
-                }
+                RectF bar((REAL)margin + pl, cy - thick / 2, (REAL)bodyW_ - pl - pr, thick);
+                cm::Color barCol = it.fontColorSet ? it.fontColor : th.separatorFallback;
+                SolidBrush sb(G(barCol));
+                g.FillRectangle(&sb, bar);
                 continue;
             }
+
             RectF hr((REAL)r.left, (REAL)r.top,
                      (REAL)(r.right - r.left), (REAL)(r.bottom - r.top));
             int itCorner = it.box.cornerSet ? (int)(it.box.cornerRadius * scale_) : radius_ / 2;
             DrawBox(g, hr, it.box, itCorner, itemImages_[i].get());
-            bool hot = ((int)i == hovered_);
+            bool hot = ((int)i == hovered_) && !it.disabled && !it.title;
             if (hot) {
                 GraphicsPath hp; AddRoundRect(hp, hr, (REAL)itCorner);
-                g.FillPath(&hoverBg, &hp);
+                FillHover(g, hr, hp, it.box);
             }
-            if (hasIcons_ && icons_[i]) {
-                int ix = margin + (iconSlot_ - iconPx_) / 2;
-                int iy = r.top + ((r.bottom - r.top) - iconPx_) / 2;
-                g.DrawImage(icons_[i].get(), Rect(ix, iy, iconPx_, iconPx_));
-            }
-            int gutter = hasIcons_ ? iconSlot_ : pad;
-            RectF tr((REAL)(margin + gutter), (REAL)r.top,
-                     (REAL)(bodyW_ - gutter - pad - chevronReserve_), (REAL)(r.bottom - r.top));
-            SolidBrush* brush = it.disabled ? &disBrush : (hot ? &hoverText : &textBrush);
-            g.DrawString(it.text.c_str(), -1, &font, tr, &sf, brush);
 
-            if (!it.submenu.empty()) {   // right-pointing chevron
+            int chevW = (!it.submenu.empty() && it.showChevron) ? chevronReserve_ : 0;
+            int leftGutter = pad, rightGutter = pad + chevW;
+            if (hasIcons_ && icons_[i]) {
+                int islot = iconSlot_;
+                int iy = r.top + ((r.bottom - r.top) - iconPx_) / 2;
+                if (it.iconRight) {
+                    int ix = margin + bodyW_ - rightGutter - islot + (islot - iconPx_) / 2;
+                    g.DrawImage(icons_[i].get(), Rect(ix, iy, iconPx_, iconPx_));
+                    rightGutter += islot;
+                } else {
+                    int ix = margin + (islot - iconPx_) / 2;
+                    g.DrawImage(icons_[i].get(), Rect(ix, iy, iconPx_, iconPx_));
+                    leftGutter = islot;
+                }
+            } else if (hasIcons_ && !it.iconRight) {
+                leftGutter = iconSlot_;  // keep the left column aligned on icon-less rows
+            }
+
+            FontFamily rfam(RFontFace(it, th).c_str());
+            Font rfont(&rfam, (REAL)(RFontSize(it, th) * scale_ * 96.0 / 72.0), FontStyleRegular, UnitPixel);
+            StringFormat rsf;
+            int al = RFontAlign(it, th);
+            rsf.SetAlignment(al == 1 ? StringAlignmentCenter : al == 2 ? StringAlignmentFar : StringAlignmentNear);
+            rsf.SetLineAlignment(StringAlignmentCenter);
+            rsf.SetFormatFlags(StringFormatFlagsNoWrap);
+            SolidBrush rbrush(G(RTextColor(it, th, hot)));
+
+            RectF tr((REAL)(margin + leftGutter), (REAL)r.top,
+                     (REAL)(bodyW_ - leftGutter - rightGutter), (REAL)(r.bottom - r.top));
+            std::wstring disp = it.text;
+            if (it.title && disp.empty()) {
+                LPCWSTR cc = RmReplaceVariables(rm_, L"#CURRENTCONFIG#");
+                if (cc) disp = cc;
+            }
+            disp = ApplyCase(disp, it.fontCase);
+            g.DrawString(disp.c_str(), -1, &rfont, tr, &rsf, &rbrush);
+
+            if (!it.submenu.empty() && it.showChevron) {   // right-pointing chevron
                 REAL cx = (REAL)(margin + bodyW_ - pad);
                 REAL cy = (REAL)((r.top + r.bottom) / 2);
                 REAL s  = (REAL)(4 * scale_);
                 PointF tri[3] = { { cx - s, cy - s }, { cx, cy }, { cx - s, cy + s } };
-                g.FillPolygon(hot ? &hoverText : &textBrush, tri, 3);
+                SolidBrush chev(G(RTextColor(it, th, hot)));
+                g.FillPolygon(&chev, tri, 3);
             }
         }
     } // surface flushes to `bits`
@@ -260,13 +356,17 @@ void PopupWindow::Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu,
     margin_ = (int)((bg.shadowSize + (std::max)(std::abs(bg.shadowOffX), std::abs(bg.shadowOffY))) * scale_);
     radius_ = (int)(bg.cornerRadius * scale_);
     emPx_   = (REAL)(th.fontSize * scale_ * 96.0 / 72.0);
-    const int itemH = (int)(th.itemHeight * scale_);
-    // Separator row height = bar thickness + vertical padding (defaults reproduce
-    // the old 1px line in a 9px row).
-    auto sepRowH = [&](const cm::BoxStyle& b) {
-        int thick = b.heightSet ? b.height : 1;
-        int pt = b.padSet ? b.padT : 4, pb = b.padSet ? b.padB : 4;
-        return (int)((thick + pt + pb) * scale_);
+    const int itemH = (int)(th.itemHeight * scale_);   // icon-slot sizing basis
+    // Per-row height: item uses its Height else ItemHeight; separator uses its
+    // ItemHeight else bar-thickness+padding; title follows item rules.
+    auto rowH = [&](const cm::MenuItem& it) -> int {
+        if (it.separator) {
+            if (it.rowHeightSet) return (int)(it.rowHeight * scale_);
+            int thick = it.box.heightSet ? it.box.height : 1;
+            int pt = it.box.padSet ? it.box.padT : 4, pb = it.box.padSet ? it.box.padB : 4;
+            return (int)((thick + pt + pb) * scale_);
+        }
+        return (int)((it.rowHeightSet ? it.rowHeight : th.itemHeight) * scale_);
     };
 
     // Resolve + load per-item icons (Rainmeter vars → absolute path). A menu
@@ -277,9 +377,10 @@ void PopupWindow::Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu,
     hasIcons_ = false;
     bool hasSub = false;
     for (const auto& it : model.items) {
-        if (!it.submenu.empty()) hasSub = true;
+        if (!it.submenu.empty() && it.showChevron) hasSub = true;
         if (it.icon.empty()) { icons_.emplace_back(); continue; }
-        LPCWSTR v = RmReplaceVariables(rm_, it.icon.c_str());
+        std::wstring raw = ExpandSystem(it.icon);
+        LPCWSTR v = RmReplaceVariables(rm_, raw.c_str());
         LPCWSTR abs = RmPathToAbsolute(rm_, v);
         Bitmap* bmp = LoadIconBitmap(abs ? abs : (v ? v : L""), iconPx_);
         if (bmp) hasIcons_ = true;
@@ -323,15 +424,16 @@ void PopupWindow::Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu,
     int textMax = 0;
     bodyH_ = 0;
     for (const auto& it : model.items) {
-        if (it.separator) { bodyH_ += sepRowH(it.box); continue; }
+        bodyH_ += rowH(it);
+        if (it.separator) continue;
         RectF box;
         gm.MeasureString(it.text.c_str(), -1, &font, PointF(0, 0), &box);
         textMax = (std::max)(textMax, (int)(box.Width + 0.5f));
-        bodyH_ += itemH;
     }
     const int leftGutter = hasIcons_ ? iconSlot_ : pad_;
     const int bgPadX = (int)((bg.padL + bg.padR) * scale_);
     bodyW_ = leftGutter + textMax + chevronReserve_ + pad_ + bgPadX;
+    if (th.widthFixed) bodyW_ = (int)(th.fixedWidth * scale_);
     int maxW = (int)(th.maxWidth * scale_);
     if (bodyW_ > maxW) bodyW_ = maxW;
     if (bodyW_ < 2 * pad_) bodyW_ = 2 * pad_;
@@ -363,7 +465,7 @@ void PopupWindow::Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu,
     itemRects_.clear();
     int y = margin_;
     for (const auto& it : model.items) {
-        int h = it.separator ? sepRowH(it.box) : itemH;
+        int h = rowH(it);
         itemRects_.push_back(RECT{ margin_, y, margin_ + bodyW_, y + h });
         y += h;
     }
@@ -416,16 +518,14 @@ std::wstring PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
             if (p) {
                 int ri = p->HitTestScreen(sp);
                 if (ri != p->hovered_) { p->hovered_ = ri; p->Paint(); }
-                if (ri >= 0) {
-                    if (!p->model_->items[ri].submenu.empty()) {
-                        if (ri != p->childParent_) p->OpenChildFor(ri);
-                    } else {
-                        p->CloseChild();    // deeper chain collapses under a leaf row
-                    }
+                if (ri >= 0 && !p->model_->items[ri].submenu.empty()) {
+                    if (ri != p->childParent_) p->OpenChildFor(ri);
+                } else if (p->childParent_ >= 0 && ri != p->childParent_) {
+                    // Left the parent row (leaf, separator, disabled, gap) => collapse.
+                    p->CloseChild();
                 }
-                // ri < 0 (separator/gap inside p): keep child so diagonal travel works.
             }
-            // p == null (in the gutter between popups): keep the whole chain open.
+            // p == null (in the gutter between popups): keep the chain (diagonal travel).
             break;
         }
         case WM_LBUTTONUP: {

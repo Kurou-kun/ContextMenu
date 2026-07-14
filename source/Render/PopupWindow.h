@@ -5,7 +5,7 @@
 #include <memory>
 #include "Menu/MenuModel.h"
 
-namespace Gdiplus { class Bitmap; class Graphics; class RectF; }
+namespace Gdiplus { class Bitmap; class Graphics; class RectF; class GraphicsPath; }
 
 // A layered GDI+ popup that renders a MenuModel and blocks until dismissed.
 // Handles hover highlight, click-to-invoke (resolves + runs the item bang via
@@ -60,6 +60,9 @@ private:
     // Draw one styled box (shadow -> fill -> image -> stroke). corner is device px.
     void DrawBox(Gdiplus::Graphics& g, Gdiplus::RectF box, const cm::BoxStyle& s,
                  int cornerPx, Gdiplus::Bitmap* image);
+    // Fill a rounded path with the resolved hover style (per-item box, else menu bg).
+    void FillHover(Gdiplus::Graphics& g, const Gdiplus::RectF& box,
+                   Gdiplus::GraphicsPath& path, const cm::BoxStyle& item);
     int  HitTest(POINT clientPt) const;     // item index, or -1 (screen->client)
     int  HitTestScreen(POINT screenPt) const;
     bool ContainsScreen(POINT screenPt) const; // inside this popup's body rect
