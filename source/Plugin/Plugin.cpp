@@ -41,6 +41,8 @@ PLUGIN_EXPORT void Initialize(void** data, void* rm)
 
     if (ctx->hwnd && !ctx->menuPath.empty())
         ctx->host = MenuHost::Attach(ctx->hwnd, ctx->skin, rm, ctx->menuPath);
+    else
+        RmLog(rm, LOG_WARNING, L"No menu file present, defaulting to standard context.");
 
     *data = ctx;
 }
@@ -71,6 +73,13 @@ PLUGIN_EXPORT void Reload(void* data, void* rm, double* /*maxValue*/)
             ctx->host->SetActive(ctx->skin, rm, ctx->menuPath);
         else
             ctx->host = MenuHost::Attach(ctx->hwnd, ctx->skin, rm, ctx->menuPath);
+    }
+    else
+    {
+        // Menu= cleared: release any stale host so it stops swallowing right-clicks,
+        // and let Rainmeter's native context menu take over.
+        if (ctx->host && ctx->hwnd) { MenuHost::Detach(ctx->hwnd); ctx->host = nullptr; }
+        RmLog(rm, LOG_WARNING, L"No menu file present, defaulting to standard context.");
     }
 }
 
