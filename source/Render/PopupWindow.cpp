@@ -336,9 +336,10 @@ void PopupWindow::Paint() {
                     drawImg(icons_[i].get(), ix, iy, iconPx_, iconPx_, it.disabled);
                     leftGutter = padl + islot;
                 }
-            } else if (hasIcons_ && !it.iconRight) {
-                leftGutter = padl + iconSlot_;  // keep the left column aligned on icon-less rows
+            } else if (hasIcons_ && th.iconPadding && !it.iconRight) {
+                leftGutter = padl + iconSlot_;  // IconPadding=1: align icon-less rows to the column
             }
+            // IconPadding=0 (default): icon-less rows stay flush at their padding.
 
             FontFamily rfam(RFontFace(it, th).c_str());
             Font rfont(&rfam, (REAL)(RFontSize(it, th) * scale_ * 96.0 / 72.0),
@@ -505,16 +506,19 @@ void PopupWindow::Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu,
     // Titles measure their resolved text so Width=auto accounts for the header.
     int contentMax = 0;
     bodyH_ = 0;
-    for (const auto& it : model.items) {
+    for (size_t i = 0; i < model.items.size(); ++i) {
+        const cm::MenuItem& it = model.items[i];
         bodyH_ += rowH(it);
         if (it.separator) continue;
         int padl = (int)((it.box.padSet ? it.box.padL : 0) * scale_);
         int padr = (int)((it.box.padSet ? it.box.padR : 0) * scale_);
         int chevW = (!it.submenu.empty() && it.showChevron) ? chevronReserve_ : 0;
+        // IconPadding=1 reserves the column on every row; else only real-icon rows.
+        int iconW = (hasIcons_ && (th.iconPadding || icons_[i])) ? iconSlot_ : 0;
         RectF box;
         std::wstring disp = DisplayText(it);
         gm.MeasureString(disp.c_str(), -1, &font, PointF(0, 0), &box);
-        int need = padl + (hasIcons_ ? iconSlot_ : 0) + (int)(box.Width + 0.5f) + chevW + padr;
+        int need = padl + iconW + (int)(box.Width + 0.5f) + chevW + padr;
         contentMax = (std::max)(contentMax, need);
     }
     const int bgPadX = (int)((bg.padL + bg.padR) * scale_);
@@ -614,6 +618,13 @@ std::wstring PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
                 } else if (p->childParent_ >= 0 && ri != p->childParent_) {
                     // Left the parent row (leaf, separator, disabled, gap) => collapse.
                     p->CloseChild();
+                }
+                // Cursor is on p, so no descendant popup is hovered (e.g. moving
+                // from a child item back onto its parent row): clear their stale
+                // highlights, keeping only a row that still owns an open child lit.
+                for (PopupWindow* q = p->child_.get(); q; q = q->child_.get()) {
+                    int want = q->childParent_;
+                    if (q->hovered_ != want) { q->hovered_ = want; q->Paint(); }
                 }
             } else {
                 // Over no popup body. Child bodies sit flush against the parent's

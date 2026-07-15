@@ -34,6 +34,7 @@ struct Theme {
     int  maxWidth = 320;
     bool widthFixed = false; int fixedWidth = 0;   // Width=<px>
     bool animFade = false;                         // AnimFade: fade popup in/out
+    bool iconPadding = false;                       // IconPadding: icon-less rows reserve the icon column
     Color separatorFallback{80, 80, 80, 255};      // bar color when a separator sets none
     BoxStyle background;   // includes BgHoverColor/GradientHover defaults; resolved in ParseMenu
 };

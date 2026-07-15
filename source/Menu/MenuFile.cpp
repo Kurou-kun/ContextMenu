@@ -181,6 +181,7 @@ static void ApplyThemeKey(Theme& t, const std::wstring& key, const std::wstring&
         else { t.fixedWidth = ParseInt(val, 0); t.widthFixed = t.fixedWidth > 0; }
     }
     else if (k == L"animfade")         t.animFade = Truthy(val);
+    else if (k == L"iconpadding")      t.iconPadding = Truthy(val);
 }
 
 static bool Truthy(const std::wstring& v) {
