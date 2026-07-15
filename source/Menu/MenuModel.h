@@ -21,6 +21,7 @@ struct BoxStyle {
     int   shadowSize = 0;      Color shadow{0, 0, 0, 120};  int shadowOffX = 0, shadowOffY = 0;
     bool  padSet = false;      int padL = 0, padT = 0, padR = 0, padB = 0;
     bool  heightSet = false;   int height = 0;              // separator bar thickness
+    bool  aaSet = false;       bool aa = false;             // AntiAlias (per-section; default off)
 };
 
 struct Theme {
@@ -32,6 +33,7 @@ struct Theme {
     int  itemHeight = 28;
     int  maxWidth = 320;
     bool widthFixed = false; int fixedWidth = 0;   // Width=<px>
+    bool animFade = false;                         // AnimFade: fade popup in/out
     Color separatorFallback{80, 80, 80, 255};      // bar color when a separator sets none
     BoxStyle background;   // includes BgHoverColor/GradientHover defaults; resolved in ParseMenu
 };
@@ -44,7 +46,8 @@ struct MenuItem {
     bool title     = false;          // [Title] non-interactive header row
     bool disabled  = false;
     bool iconRight = false;          // IconPos=Right
-    bool showChevron = true;         // SubmenuIco (default on)
+    bool showChevron = true;         // Chevron (default on)
+    std::wstring chevronIcon;        // ChevronIcon: custom image, else drawn triangle
     bool rowHeightSet = false; int rowHeight = 0;   // item Height / separator ItemHeight
 
     // Text overrides; *Set false => fall back to Theme.
@@ -54,6 +57,7 @@ struct MenuItem {
     bool fontFaceSet = false; std::wstring fontFace;
     int  fontAlign = -1;            // -1 unset, else 0/1/2
     int  fontCase = 0;             // FontCase: 0=none 1=upper 2=lower 3=proper
+    int  fontStyle = 0;            // FontWeight -> Gdiplus FontStyle: 0=regular 1=bold 2=italic 4=underline
 
     BoxStyle box;                    // per-row box (incl. hover fill, and bar thickness for separators)
     std::vector<MenuItem> submenu;   // non-empty => fly-out

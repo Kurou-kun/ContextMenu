@@ -104,9 +104,12 @@ static const std::wstring& RFontFace(const cm::MenuItem& it, const cm::Theme& t)
 static cm::Color RTextColor(const cm::MenuItem& it, const cm::Theme& t, bool hot) {
     cm::Color c = hot ? (it.fontHoverColorSet ? it.fontHoverColor : t.hoverText)
                       : (it.fontColorSet ? it.fontColor : t.text);
-    if (it.disabled) c.a = 200;
+    if (it.disabled) c.a = 150;
     return c;
 }
+
+// Disabled rows dim their icon/chevron images to match the 150 text alpha.
+static const REAL kDisabledAlpha = 150.0f / 255.0f;
 
 // FontCase: 1=upper 2=lower 3=proper (title case); 0/else = verbatim.
 static std::wstring ApplyCase(std::wstring s, int mode) {
@@ -120,6 +123,15 @@ static std::wstring ApplyCase(std::wstring s, int mode) {
         }
     }
     return s;
+}
+
+std::wstring PopupWindow::DisplayText(const cm::MenuItem& it) const {
+    std::wstring disp = it.text;
+    if (it.title && disp.empty()) {
+        LPCWSTR cc = RmReplaceVariables(rm_, L"#CURRENTCONFIG#");
+        if (cc) disp = cc;
+    }
+    return ApplyCase(disp, it.fontCase);
 }
 
 static void AddRoundRect(GraphicsPath& path, RectF r, REAL rad) {
@@ -195,6 +207,7 @@ PopupWindow::PopupWindow(HWND owner, void* skin, void* rm)
 
 PopupWindow::~PopupWindow() {
     if (hwnd_) DestroyWindow(hwnd_);
+    FreeLayer();
 }
 
 int PopupWindow::HitTest(POINT p) const {
@@ -220,7 +233,7 @@ bool PopupWindow::ContainsScreen(POINT sp) const {
 
 void PopupWindow::Paint() {
     const cm::Theme& th = model_->theme;
-    const int pad = pad_, margin = margin_, radius = radius_;
+    const int margin = margin_, radius = radius_;
 
     BITMAPINFO bmi{};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -230,26 +243,56 @@ void PopupWindow::Paint() {
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
 
+    FreeLayer();   // drop the previous frame's surface
     HDC screenDC = GetDC(nullptr);
     void* bits = nullptr;
-    HBITMAP dib = CreateDIBSection(screenDC, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    HDC memDC = CreateCompatibleDC(screenDC);
-    HGDIOBJ oldBmp = SelectObject(memDC, dib);
+    dib_ = CreateDIBSection(screenDC, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    memDC_ = CreateCompatibleDC(screenDC);
+    oldBmp_ = SelectObject(memDC_, dib_);
+    ReleaseDC(nullptr, screenDC);
 
     {
         Bitmap surface(winW_, winH_, winW_ * 4, PixelFormat32bppPARGB, (BYTE*)bits);
         Graphics g(&surface);
-        g.SetSmoothingMode(SmoothingModeAntiAlias);
-        g.SetTextRenderingHint(TextRenderingHintAntiAlias);
         g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
         g.Clear(Gdiplus::Color(0, 0, 0, 0));
 
+        // Per-section AntiAlias (default off => crisp): each box picks its own.
+        auto applyAA = [&](const cm::BoxStyle& b) {
+            bool on = b.aaSet && b.aa;
+            g.SetSmoothingMode(on ? SmoothingModeAntiAlias : SmoothingModeNone);
+            g.SetTextRenderingHint(on ? TextRenderingHintAntiAlias
+                                      : TextRenderingHintSingleBitPerPixelGridFit);
+        };
+
+        applyAA(th.background);
         RectF bodyRect((REAL)margin, (REAL)margin, (REAL)bodyW_, (REAL)bodyH_);
         DrawBox(g, bodyRect, th.background, radius, bgImage_.get());
+
+        // Per-row horizontal padding (default 0; the user owns all insets).
+        auto pL = [&](const cm::MenuItem& it) { return (int)((it.box.padSet ? it.box.padL : 0) * scale_); };
+        auto pR = [&](const cm::MenuItem& it) { return (int)((it.box.padSet ? it.box.padR : 0) * scale_); };
+        // Blit an image; disabled rows grey it out (luminance) and dim its alpha.
+        auto drawImg = [&](Bitmap* b, int x, int y, int w, int h, bool dim) {
+            if (!b) return;
+            if (dim) {
+                ColorMatrix m = { {{0.299f,0.299f,0.299f,0,0},
+                                   {0.587f,0.587f,0.587f,0,0},
+                                   {0.114f,0.114f,0.114f,0,0},
+                                   {0,0,0,kDisabledAlpha,0},
+                                   {0,0,0,0,1}} };
+                ImageAttributes ia; ia.SetColorMatrix(&m);
+                g.DrawImage(b, Rect(x, y, w, h), 0, 0, (INT)b->GetWidth(), (INT)b->GetHeight(),
+                            UnitPixel, &ia);
+            } else {
+                g.DrawImage(b, Rect(x, y, w, h));
+            }
+        };
 
         for (size_t i = 0; i < model_->items.size(); ++i) {
             const cm::MenuItem& it = model_->items[i];
             const RECT& r = itemRects_[i]; // client coords
+            applyAA(it.box);
 
             if (it.separator) {
                 const cm::BoxStyle& b = it.box;
@@ -259,8 +302,7 @@ void PopupWindow::Paint() {
                     DrawBox(g, rowRect, b, rc, itemImages_[i].get());
                 }
                 REAL thick = (REAL)((b.heightSet ? b.height : 1) * scale_);
-                REAL pl = (REAL)((b.padSet ? b.padL : 8) * scale_);
-                REAL pr = (REAL)((b.padSet ? b.padR : 8) * scale_);
+                REAL pl = (REAL)pL(it), pr = (REAL)pR(it);
                 REAL cy = (REAL)((r.top + r.bottom) / 2);
                 RectF bar((REAL)margin + pl, cy - thick / 2, (REAL)bodyW_ - pl - pr, thick);
                 cm::Color barCol = it.fontColorSet ? it.fontColor : th.separatorFallback;
@@ -279,64 +321,90 @@ void PopupWindow::Paint() {
                 FillHover(g, hr, hp, it.box);
             }
 
+            int padl = pL(it), padr = pR(it);
             int chevW = (!it.submenu.empty() && it.showChevron) ? chevronReserve_ : 0;
-            int leftGutter = pad, rightGutter = pad + chevW;
+            int leftGutter = padl, rightGutter = padr + chevW;
             if (hasIcons_ && icons_[i]) {
                 int islot = iconSlot_;
                 int iy = r.top + ((r.bottom - r.top) - iconPx_) / 2;
                 if (it.iconRight) {
                     int ix = margin + bodyW_ - rightGutter - islot + (islot - iconPx_) / 2;
-                    g.DrawImage(icons_[i].get(), Rect(ix, iy, iconPx_, iconPx_));
+                    drawImg(icons_[i].get(), ix, iy, iconPx_, iconPx_, it.disabled);
                     rightGutter += islot;
                 } else {
-                    int ix = margin + (islot - iconPx_) / 2;
-                    g.DrawImage(icons_[i].get(), Rect(ix, iy, iconPx_, iconPx_));
-                    leftGutter = islot;
+                    int ix = margin + padl + (islot - iconPx_) / 2;
+                    drawImg(icons_[i].get(), ix, iy, iconPx_, iconPx_, it.disabled);
+                    leftGutter = padl + islot;
                 }
             } else if (hasIcons_ && !it.iconRight) {
-                leftGutter = iconSlot_;  // keep the left column aligned on icon-less rows
+                leftGutter = padl + iconSlot_;  // keep the left column aligned on icon-less rows
             }
 
             FontFamily rfam(RFontFace(it, th).c_str());
-            Font rfont(&rfam, (REAL)(RFontSize(it, th) * scale_ * 96.0 / 72.0), FontStyleRegular, UnitPixel);
+            Font rfont(&rfam, (REAL)(RFontSize(it, th) * scale_ * 96.0 / 72.0),
+                       (FontStyle)it.fontStyle, UnitPixel);
             StringFormat rsf;
             int al = RFontAlign(it, th);
             rsf.SetAlignment(al == 1 ? StringAlignmentCenter : al == 2 ? StringAlignmentFar : StringAlignmentNear);
             rsf.SetLineAlignment(StringAlignmentCenter);
             rsf.SetFormatFlags(StringFormatFlagsNoWrap);
+            rsf.SetTrimming(StringTrimmingEllipsisCharacter);   // long text -> "..."
             SolidBrush rbrush(G(RTextColor(it, th, hot)));
 
             RectF tr((REAL)(margin + leftGutter), (REAL)r.top,
                      (REAL)(bodyW_ - leftGutter - rightGutter), (REAL)(r.bottom - r.top));
-            std::wstring disp = it.text;
-            if (it.title && disp.empty()) {
-                LPCWSTR cc = RmReplaceVariables(rm_, L"#CURRENTCONFIG#");
-                if (cc) disp = cc;
-            }
-            disp = ApplyCase(disp, it.fontCase);
+            std::wstring disp = DisplayText(it);
             g.DrawString(disp.c_str(), -1, &rfont, tr, &rsf, &rbrush);
 
-            if (!it.submenu.empty() && it.showChevron) {   // right-pointing chevron
-                REAL cx = (REAL)(margin + bodyW_ - pad);
-                REAL cy = (REAL)((r.top + r.bottom) / 2);
-                REAL s  = (REAL)(4 * scale_);
-                PointF tri[3] = { { cx - s, cy - s }, { cx, cy }, { cx - s, cy + s } };
-                SolidBrush chev(G(RTextColor(it, th, hot)));
-                g.FillPolygon(&chev, tri, 3);
+            if (chevW) {
+                if (chevrons_[i]) {   // custom ChevronIcon
+                    int cs = (std::min)(chevronReserve_, (int)(r.bottom - r.top)) - (int)(4 * scale_);
+                    if (cs < 1) cs = chevronReserve_;
+                    int cx = margin + bodyW_ - padr - chevronReserve_ + (chevronReserve_ - cs) / 2;
+                    int cy = r.top + ((r.bottom - r.top) - cs) / 2;
+                    drawImg(chevrons_[i].get(), cx, cy, cs, cs, it.disabled);
+                } else {              // drawn right-pointing triangle
+                    REAL cx = (REAL)(margin + bodyW_ - padr - (int)(4 * scale_));
+                    REAL cy = (REAL)((r.top + r.bottom) / 2);
+                    REAL s  = (REAL)(4 * scale_);
+                    PointF tri[3] = { { cx - s, cy - s }, { cx, cy }, { cx - s, cy + s } };
+                    SolidBrush chev(G(RTextColor(it, th, hot)));
+                    g.FillPolygon(&chev, tri, 3);
+                }
             }
         }
     } // surface flushes to `bits`
 
+    Blit(layerAlpha_);
+}
+
+// Re-send the (already rendered) layer surface at a whole-window constant alpha.
+void PopupWindow::Blit(BYTE alpha) {
+    if (!memDC_ || !hwnd_) return;
+    HDC screenDC = GetDC(nullptr);
     POINT ptDst{ winX_, winY_ };
     SIZE  size{ winW_, winH_ };
     POINT ptSrc{ 0, 0 };
-    BLENDFUNCTION bf{ AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
-    UpdateLayeredWindow(hwnd_, screenDC, &ptDst, &size, memDC, &ptSrc, 0, &bf, ULW_ALPHA);
-
-    SelectObject(memDC, oldBmp);
-    DeleteObject(dib);
-    DeleteDC(memDC);
+    BLENDFUNCTION bf{ AC_SRC_OVER, 0, alpha, AC_SRC_ALPHA };
+    UpdateLayeredWindow(hwnd_, screenDC, &ptDst, &size, memDC_, &ptSrc, 0, &bf, ULW_ALPHA);
     ReleaseDC(nullptr, screenDC);
+}
+
+void PopupWindow::FreeLayer() {
+    if (memDC_) { SelectObject(memDC_, oldBmp_); DeleteDC(memDC_); memDC_ = nullptr; }
+    if (dib_)   { DeleteObject(dib_); dib_ = nullptr; }
+}
+
+// ~110ms fade up / ~90ms fade down, re-blitting the same frame each step.
+void PopupWindow::FadeIn() {
+    const int dur = 110, step = 12;
+    for (int t = 0; t <= dur; t += step) Blit((BYTE)(255 * t / dur)), Sleep(step);
+    layerAlpha_ = 255; Blit(255);
+}
+void PopupWindow::FadeOut() {
+    const int dur = 90, step = 12;
+    for (int t = dur; t >= 0; t -= step) Blit((BYTE)(255 * t / dur)), Sleep(step);
+    layerAlpha_ = 0; Blit(0);
 }
 
 void PopupWindow::Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu, int parentLeftX) {
@@ -352,7 +420,6 @@ void PopupWindow::Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu,
     scale_ = dpiX / 96.0;
 
     const cm::BoxStyle& bg = th.background;
-    pad_    = (int)(8 * scale_);   // fixed text gutter; background padding added below
     margin_ = (int)((bg.shadowSize + (std::max)(std::abs(bg.shadowOffX), std::abs(bg.shadowOffY))) * scale_);
     radius_ = (int)(bg.cornerRadius * scale_);
     emPx_   = (REAL)(th.fontSize * scale_ * 96.0 / 72.0);
@@ -363,7 +430,7 @@ void PopupWindow::Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu,
         if (it.separator) {
             if (it.rowHeightSet) return (int)(it.rowHeight * scale_);
             int thick = it.box.heightSet ? it.box.height : 1;
-            int pt = it.box.padSet ? it.box.padT : 4, pb = it.box.padSet ? it.box.padB : 4;
+            int pt = it.box.padSet ? it.box.padT : 0, pb = it.box.padSet ? it.box.padB : 0;
             return (int)((thick + pt + pb) * scale_);
         }
         return (int)((it.rowHeightSet ? it.rowHeight : th.itemHeight) * scale_);
@@ -404,6 +471,19 @@ void PopupWindow::Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu,
         itemImages_.emplace_back(LoadIconBitmap(abs ? abs : (v ? v : L""), 256));
     }
 
+    // Custom chevron images (only for rows that actually show a chevron).
+    const int chevPx = chevronReserve_ > 0 ? chevronReserve_ : (int)(16 * scale_);
+    chevrons_.clear();
+    for (const auto& it : model.items) {
+        if (it.chevronIcon.empty() || it.submenu.empty() || !it.showChevron) {
+            chevrons_.emplace_back(); continue;
+        }
+        std::wstring raw = ExpandSystem(it.chevronIcon);
+        LPCWSTR v = RmReplaceVariables(rm_, raw.c_str());
+        LPCWSTR abs = RmPathToAbsolute(rm_, v);
+        chevrons_.emplace_back(LoadIconBitmap(abs ? abs : (v ? v : L""), chevPx));
+    }
+
     // Reuse the window on reposition (right-click again) so we never destroy the
     // capture-holding window mid-pump — that would fire WM_CAPTURECHANGED and end.
     if (!hwnd_) {
@@ -421,22 +501,29 @@ void PopupWindow::Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu,
     FontFamily family(th.fontFace.c_str());
     Font font(&family, emPx_, FontStyleRegular, UnitPixel);
 
-    int textMax = 0;
+    // Body width = widest row's content (padL + icon slot + text + chevron + padR).
+    // Titles measure their resolved text so Width=auto accounts for the header.
+    int contentMax = 0;
     bodyH_ = 0;
     for (const auto& it : model.items) {
         bodyH_ += rowH(it);
         if (it.separator) continue;
+        int padl = (int)((it.box.padSet ? it.box.padL : 0) * scale_);
+        int padr = (int)((it.box.padSet ? it.box.padR : 0) * scale_);
+        int chevW = (!it.submenu.empty() && it.showChevron) ? chevronReserve_ : 0;
         RectF box;
-        gm.MeasureString(it.text.c_str(), -1, &font, PointF(0, 0), &box);
-        textMax = (std::max)(textMax, (int)(box.Width + 0.5f));
+        std::wstring disp = DisplayText(it);
+        gm.MeasureString(disp.c_str(), -1, &font, PointF(0, 0), &box);
+        int need = padl + (hasIcons_ ? iconSlot_ : 0) + (int)(box.Width + 0.5f) + chevW + padr;
+        contentMax = (std::max)(contentMax, need);
     }
-    const int leftGutter = hasIcons_ ? iconSlot_ : pad_;
     const int bgPadX = (int)((bg.padL + bg.padR) * scale_);
-    bodyW_ = leftGutter + textMax + chevronReserve_ + pad_ + bgPadX;
+    bodyW_ = contentMax + bgPadX;
     if (th.widthFixed) bodyW_ = (int)(th.fixedWidth * scale_);
     int maxW = (int)(th.maxWidth * scale_);
     if (bodyW_ > maxW) bodyW_ = maxW;
-    if (bodyW_ < 2 * pad_) bodyW_ = 2 * pad_;
+    int minW = (int)(8 * scale_);
+    if (bodyW_ < minW) bodyW_ = minW;
 
     winW_ = bodyW_ + 2 * margin_;
     winH_ = bodyH_ + 2 * margin_;
@@ -470,8 +557,12 @@ void PopupWindow::Open(const cm::MenuModel& model, POINT anchor, bool asSubmenu,
         y += h;
     }
 
+    // Fade the root popup in (submenus appear instantly to keep cascades snappy).
+    bool fade = !asSubmenu && th.animFade;
+    layerAlpha_ = fade ? 0 : 255;
     Paint();
     ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+    if (fade) FadeIn();
 }
 
 PopupWindow* PopupWindow::DeepestAt(POINT sp) {
@@ -524,8 +615,15 @@ std::wstring PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
                     // Left the parent row (leaf, separator, disabled, gap) => collapse.
                     p->CloseChild();
                 }
+            } else {
+                // Over no popup body. Child bodies sit flush against the parent's
+                // edge (no gap), so this is never mid-travel onto a submenu — the
+                // cursor has left for the desktop. Collapse the whole submenu tree
+                // and drop every stale hover highlight.
+                if (child_) CloseChild();
+                for (PopupWindow* q = this; q; q = q->child_.get())
+                    if (q->hovered_ != -1) { q->hovered_ = -1; q->Paint(); }
             }
-            // p == null (in the gutter between popups): keep the chain (diagonal travel).
             break;
         }
         case WM_LBUTTONUP: {
@@ -578,8 +676,10 @@ std::wstring PopupWindow::Show(const cm::MenuModel& model, POINT anchor) {
     }
     ReleaseCapture();
 
-    // Tear the whole chain down before the caller runs the bang.
+    // Tear the whole chain down before the caller runs the bang. Collapse
+    // submenus first, then fade the root out (if enabled) before it's destroyed.
     CloseChild();
+    if (model_ && model_->theme.animFade) FadeOut();
     if (hwnd_) { DestroyWindow(hwnd_); hwnd_ = nullptr; }
 
     // Replay the outside right-click now that our window/capture are gone, so it

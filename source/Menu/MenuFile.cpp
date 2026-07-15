@@ -88,6 +88,15 @@ static int ParseCase(const std::wstring& v) {
     return 0;
 }
 
+// FontWeight -> Gdiplus FontStyle int: bold=1 italic=2 underscored/underline=4; none/else=0.
+static int ParseFontStyle(const std::wstring& v) {
+    std::wstring s = Lower(Trim(v));
+    if (s == L"bold")   return 1;
+    if (s == L"italic") return 2;
+    if (s == L"underscored" || s == L"underline") return 4;
+    return 0;
+}
+
 // Parse "Linear <angle> ; r,g,b,a ; r,g,b,a [; ...]" into angle+stops.
 static bool ParseGradient(const std::wstring& val, double& angle, std::vector<Color>& stops) {
     Color c; double a = 0; int seg = 0; size_t i = 0;
@@ -108,8 +117,11 @@ static bool ParseGradient(const std::wstring& val, double& angle, std::vector<Co
     return stops.size() >= 2;
 }
 
+static bool Truthy(const std::wstring& v);
+
 static void ApplyBoxKey(BoxStyle& s, const std::wstring& key, const std::wstring& val) {
     std::wstring k = Lower(key); Color c;
+    if (k == L"antialias") { s.aa = Truthy(val); s.aaSet = true; return; }
     if (k == L"bgcolor") { if (ParseColor(val, c)) { s.color = c; s.hasColor = true; } }
     else if (k == L"bghovercolor") { if (ParseColor(val, c)) { s.hoverColor = c; s.hasHoverColor = true; } }
     else if (k == L"gradient") {
@@ -168,6 +180,7 @@ static void ApplyThemeKey(Theme& t, const std::wstring& key, const std::wstring&
         if (s == L"auto") t.widthFixed = false;
         else { t.fixedWidth = ParseInt(val, 0); t.widthFixed = t.fixedWidth > 0; }
     }
+    else if (k == L"animfade")         t.animFade = Truthy(val);
 }
 
 static bool Truthy(const std::wstring& v) {
@@ -184,7 +197,9 @@ static MenuItem BuildItem(const KeyVals& kv) {
         else if (k == L"icon")           it.icon = p.second;
         else if (k == L"iconpos")        it.iconRight = (Lower(Trim(p.second)) == L"right");
         else if (k == L"disabled")       it.disabled = Truthy(p.second);
-        else if (k == L"submenuico")     it.showChevron = Truthy(p.second);
+        else if (k == L"chevron")        it.showChevron = Truthy(p.second);
+        else if (k == L"chevronicon")    it.chevronIcon = p.second;
+        else if (k == L"fontweight")     it.fontStyle = ParseFontStyle(p.second);
         else if (k == L"height")         { it.rowHeight = ParseInt(p.second, 0); it.rowHeightSet = true; }
         else if (k == L"fontcolor")      { if (ParseColor(p.second, c)) { it.fontColor = c; it.fontColorSet = true; } }
         else if (k == L"fonthovercolor"){ if (ParseColor(p.second, c)) { it.fontHoverColor = c; it.fontHoverColorSet = true; } }
@@ -272,7 +287,8 @@ MenuModel ParseMenu(const std::wstring& text) {
         if (line.empty() || line[0] == L';' || line[0] == L'#') continue;
         if (line.front() == L'[' && line.back() == L']') {
             section = Trim(line.substr(1, line.size() - 2));
-            if (Lower(section) != L"menu")
+            std::wstring sl = Lower(section);
+            if (sl != L"menu" && sl != L"variables")
                 sections.emplace_back(section, KeyVals{});
             continue;
         }
@@ -280,7 +296,9 @@ MenuModel ParseMenu(const std::wstring& text) {
         if (eq == std::wstring::npos) continue;
         std::wstring key = Trim(line.substr(0, eq));
         std::wstring val = Trim(line.substr(eq + 1));
-        if (Lower(section) == L"menu") menuKv.emplace_back(key, val);
+        std::wstring sl = Lower(section);
+        if (sl == L"menu") menuKv.emplace_back(key, val);
+        else if (sl == L"variables") continue;   // consumed by the preprocessor
         else if (!sections.empty()) sections.back().second.emplace_back(key, val);
     }
 
